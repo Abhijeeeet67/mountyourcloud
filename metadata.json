@@ -1,6 +1,6 @@
 {
   "name": "MountYourClouds",
-  "description": "Dark-mode, keyboard-first multi-cloud file manager and storage aggregator with multi-provider cloud connectors and browser IndexedDB persistence.",
+  "description": "Every cloud. One place. Unified multi-cloud storage SaaS connecting Google Drive, OneDrive, Dropbox, Box, pCloud, Amazon S3, Cloudflare R2, and WebDAV in one secure workspace.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

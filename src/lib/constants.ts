@@ -7,9 +7,11 @@ import type {
 } from '../types/domain';
 
 export const APP_NAME = 'MountYourClouds';
+export const APP_TAGLINE = 'Every cloud. One place.';
 
-export const PROTOTYPE_BADGE_TEXT = 'Production Multi-Cloud Storage Aggregator · Secure Live REST & S3 Adapters';
+export const PROTOTYPE_BADGE_TEXT = 'Every cloud. One place. · Unified Multi-Cloud Storage SaaS';
 
+// Retained solely for unit test fixtures (never pre-filled or seeded in production)
 export const DEMO_ACCOUNT_EMAIL = 'alex.rivera@mountyourclouds.demo';
 export const DEMO_ACCOUNT_NAME = 'Alex Rivera';
 export const DEMO_ACCOUNT_DEFAULT_PASSWORD = 'demo-vault-password';

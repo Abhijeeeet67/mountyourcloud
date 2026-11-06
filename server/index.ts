@@ -5,7 +5,13 @@ const PORT = Number(process.env.PORT) || 3001;
 
 const server = http.createServer(async (req, res) => {
   const url = req.url || '';
-  if (url.startsWith('/api/oauth')) {
+  if (
+    url.startsWith('/api/oauth') ||
+    url.startsWith('/api/auth') ||
+    url.startsWith('/api/billing') ||
+    url.startsWith('/api/admin') ||
+    url.startsWith('/api/health')
+  ) {
     try {
       const handled = await handleOAuthRequest(req, res, url);
       if (handled) return;
@@ -24,5 +30,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`MountYourClouds OAuth & Security Server running on port ${PORT}`);
+  console.log(`MountYourClouds Production API & OAuth Server running on port ${PORT}`);
 });

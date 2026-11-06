@@ -4,6 +4,7 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronRight,
+  Cloud,
   CreditCard,
   Folder,
   FolderOpen,
@@ -13,19 +14,22 @@ import {
   LayoutGrid,
   List,
   Menu,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Search,
   Settings,
+  ShieldCheck,
   Sparkles,
   Star,
+  Sun,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { APP_NAME, PROTOTYPE_BADGE_TEXT } from '../../lib/constants';
+import { APP_NAME } from '../../lib/constants';
 import { formatBytes, modKeySymbol } from '../../lib/format';
 import {
   computeTransferQuotaUsage,
@@ -43,10 +47,12 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const usingMemoryFallback = useVaultStore((s) => s.usingMemoryFallback);
   const versionChangeDetected = useVaultStore((s) => s.versionChangeDetected);
   const currentAccount = useVaultStore((s) => s.currentAccount);
+  const isAdmin = useVaultStore((s) => s.isAdmin);
   const nodes = useVaultStore((s) => s.nodes);
   const mounts = useVaultStore((s) => s.mounts);
   const activity = useVaultStore((s) => s.activity);
   const settings = useVaultStore((s) => s.settings);
+  const setTheme = useVaultStore((s) => s.setTheme);
   const currentFolderId = useVaultStore((s) => s.currentFolderId);
   const searchQuery = useVaultStore((s) => s.searchQuery);
   const setSearchQuery = useVaultStore((s) => s.setSearchQuery);
@@ -68,7 +74,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const [isDraggingOverWindow, setIsDraggingOverWindow] = useState(false);
   const dragDepthRef = useRef(0);
 
-  // Global keyboard shortcuts: Ctrl/⌘+K, ?, / (§6)
+  // Global keyboard shortcuts: Ctrl/⌘+K, ?, /
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -100,7 +106,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [setCommandPaletteOpen, setShortcutsModalOpen]);
 
-  // OS Drag-and-Drop onto workspace (§5)
+  // OS Drag-and-Drop onto workspace
   const handleDragEnter = (e: React.DragEvent) => {
     if (!e.dataTransfer.types.includes('Files')) return;
     e.preventDefault();
@@ -185,7 +191,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     }
   };
 
-  // Folder tree structure for sidebar (`role="tree"`)
   const activeFoldersByParent = useMemo(() => {
     const map = new Map(nodes.map((n) => [n.id, n]));
     const byParent = new Map<string | null, FolderNode[]>();
@@ -202,7 +207,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     return byParent;
   }, [nodes]);
 
-  // External Cloud Storage Capacity & Platform Plan Quota calculations
   const totalUsedBytes = useMemo(
     () => nodes.reduce((sum, n) => (n.type === 'file' ? sum + n.sizeBytes : sum), 0),
     [nodes]
@@ -211,7 +215,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     () => mounts.reduce((sum, m) => sum + m.allocatedBytes, 0),
     [mounts]
   );
-  const externalCloudCount = Math.max(0, mounts.length - 1);
+  const externalCloudCount = Math.max(
+    0,
+    mounts.filter((m) => m.id !== 'local-vault').length
+  );
 
   const plans = useMemo(() => getEffectivePlans(settings.customPlans), [settings.customPlans]);
   const activePlanId = normalizePlanId(settings.subscription.planId);
@@ -224,7 +231,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   const storageRatio = Math.min(1, totalUsedBytes / Math.max(1, totalAllocatedBytes));
 
-  // Breadcrumb calculation & collapse middle segments beyond 4 (§6)
   const breadcrumbs = useMemo(() => {
     if (location.pathname.startsWith('/app/files')) {
       return buildBreadcrumbChain(currentFolderId, nodes);
@@ -233,10 +239,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       '/app/overview': 'Overview',
       '/app/starred': 'Starred',
       '/app/trash': 'Trash',
-      '/app/providers': 'Provider Mounts',
+      '/app/providers': 'Cloud Providers',
       '/app/analytics': 'Storage Analytics',
-      '/app/pricing': 'Pricing & Plans',
+      '/app/pricing': 'Pricing & Billing',
       '/app/settings': 'Settings',
+      '/app/admin': 'Admin Console',
     };
     const title = routeTitles[location.pathname] ?? 'Workspace';
     return [{ id: null, name: title }];
@@ -289,10 +296,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                 toggleTreeFolder(fld.id, false);
               }
             }}
-            className={`group flex items-center gap-1.5 pr-2.5 py-1.5 rounded-md text-[13px] cursor-pointer select-none ${
+            className={`group flex items-center gap-1.5 pr-2.5 py-1.5 rounded-lg text-[13px] cursor-pointer select-none ${
               isActive
-                ? 'bg-[#1E2230] text-[#F3F4F6] font-medium'
-                : 'text-[#8A94A6] hover:text-[#F3F4F6] hover:bg-[#131620]'
+                ? 'bg-[#0071E3]/15 text-[#0071E3] dark:text-[#0A84FF] font-semibold'
+                : 'text-[#6E6E73] dark:text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] hover:bg-black/[0.04] dark:hover:bg-white/[0.04]'
             }`}
           >
             {hasChildren ? (
@@ -304,7 +311,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                   e.stopPropagation();
                   toggleTreeFolder(fld.id);
                 }}
-                className="p-0.5 text-[#8A94A6] hover:text-white rounded"
+                className="p-0.5 text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-white rounded"
               >
                 <ChevronRight
                   className={`w-3.5 h-3.5 tv-transition ${isExpanded ? 'rotate-90' : ''}`}
@@ -314,9 +321,9 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               <span className="w-4 shrink-0" />
             )}
             {isActive ? (
-              <FolderOpen className="w-3.5 h-3.5 text-[#818CF8] shrink-0" />
+              <FolderOpen className="w-3.5 h-3.5 text-[#0071E3] dark:text-[#0A84FF] shrink-0" />
             ) : (
-              <Folder className="w-3.5 h-3.5 text-[#8A94A6] group-hover:text-[#F3F4F6] shrink-0" />
+              <Folder className="w-3.5 h-3.5 text-[#6E6E73] group-hover:text-[#1D1D1F] dark:group-hover:text-[#F5F5F7] shrink-0" />
             )}
             <span className="truncate">{fld.name}</span>
           </div>
@@ -333,36 +340,38 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     { to: '/app/files', label: 'All Files', icon: Folder },
     { to: '/app/starred', label: 'Starred', icon: Star },
     { to: '/app/trash', label: 'Trash', icon: Trash2 },
-    { to: '/app/providers', label: 'Providers', icon: HardDrive },
+    { to: '/app/providers', label: 'Cloud Providers', icon: HardDrive },
     { to: '/app/analytics', label: 'Analytics', icon: BarChart3 },
-    { to: '/app/pricing', label: 'Pricing & Plans', icon: CreditCard },
+    { to: '/app/pricing', label: 'Plans & Billing', icon: CreditCard },
     { to: '/app/settings', label: 'Settings', icon: Settings },
+    ...(isAdmin
+      ? [{ to: '/app/admin', label: 'Admin Console', icon: ShieldCheck }]
+      : []),
   ];
 
   const isCollapsedDesktop = settings.sidebarCollapsed;
   const mod = modKeySymbol();
+  const isDarkTheme = settings.theme === 'dark';
 
   return (
     <div
-      className="min-h-screen flex flex-col bg-[#090A0F] text-[#F3F4F6]"
+      className="min-h-screen flex flex-col bg-[#F5F5F7] dark:bg-[#0B0C10] text-[#1D1D1F] dark:text-[#F5F5F7] tv-transition"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Accessibility Skip Link (§10) */}
       <a
         href="#main-workspace-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-[#4F46E5] focus:text-white focus:rounded-md"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-4 focus:py-2 focus:bg-[#0071E3] focus:text-white focus:rounded-md"
       >
         Skip to main workspace content
       </a>
 
-      {/* Amber Fallback or Version Change Banners (§3) */}
       {usingMemoryFallback && (
         <div
           role="alert"
-          className="bg-[#F59E0B]/15 border-b border-[#F59E0B]/40 px-4 py-2 text-xs text-[#F59E0B] flex items-center justify-center gap-2"
+          className="bg-[#FF9F0A]/15 border-b border-[#FF9F0A]/40 px-4 py-2 text-xs text-[#D97706] dark:text-[#FFD60A] flex items-center justify-center gap-2"
         >
           <AlertTriangle className="w-4 h-4 shrink-0" />
           <span>Storage unavailable — changes won’t survive a reload.</span>
@@ -372,55 +381,24 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       {versionChangeDetected && (
         <div
           role="alert"
-          className="bg-[#F59E0B]/15 border-b border-[#F59E0B]/40 px-4 py-2 text-xs text-[#F59E0B] flex items-center justify-center gap-3"
+          className="bg-[#FF9F0A]/15 border-b border-[#FF9F0A]/40 px-4 py-2 text-xs text-[#D97706] dark:text-[#FFD60A] flex items-center justify-center gap-3"
         >
           <AlertTriangle className="w-4 h-4 shrink-0" />
           <span>Database schema updated in another tab. Please reload to continue.</span>
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="px-2.5 py-0.5 bg-[#F59E0B] text-black font-medium rounded"
+            className="px-2.5 py-0.5 bg-[#FF9F0A] text-black font-medium rounded"
           >
             Reload now
           </button>
         </div>
       )}
 
-      {/* Permanent Prototype Honesty Bar (§0) */}
-      <div className="bg-[#090A0F] border-b border-[#1E2230] px-4 py-1.5 flex items-center justify-between gap-4 text-[12px]">
-        <div className="flex items-center gap-2 text-[#8A94A6] truncate">
-          <span className="inline-block w-2 h-2 rounded-full bg-[#818CF8] shrink-0" />
-          <span className="font-mono text-[11px] text-[#F3F4F6] truncate">
-            {PROTOTYPE_BADGE_TEXT}
-          </span>
-        </div>
-        <div className="hidden sm:flex items-center gap-4 text-xs text-[#8A94A6] shrink-0">
-          {settings.devSettings.offline && (
-            <span className="text-[#F43F5E] font-mono">Offline Simulation Active</span>
-          )}
-          {settings.devSettings.failureRate > 0 && (
-            <span className="text-[#F59E0B] font-mono">
-              Fault Rate: {settings.devSettings.failureRate}%
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => setShortcutsModalOpen(true)}
-            className="hover:text-[#F3F4F6] flex items-center gap-1"
-            aria-label="Open keyboard shortcuts"
-          >
-            <Keyboard className="w-3.5 h-3.5" />
-            <span>Shortcuts (?)</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Main Flex Shell */}
       <div className="flex-1 flex min-h-0 relative">
-        {/* Mobile Slide-Over Backdrop (<768px) */}
         {mobileSidebarOpen && (
           <div
-            className="fixed inset-0 z-40 bg-black/70 md:hidden"
+            className="fixed inset-0 z-40 bg-black/60 md:hidden"
             onClick={() => setMobileSidebarOpen(false)}
           />
         )}
@@ -428,18 +406,18 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         {/* Sidebar Navigation */}
         <aside
           aria-label="Workspace navigation"
-          className={`fixed md:static inset-y-0 left-0 z-40 flex flex-col bg-[#090A0F] border-r border-[#1E2230] shrink-0 tv-transition ${
+          className={`fixed md:static inset-y-0 left-0 z-40 flex flex-col bg-white/95 dark:bg-[#15171E]/95 backdrop-blur-xl border-r border-black/[0.08] dark:border-white/[0.08] shrink-0 tv-transition ${
             mobileSidebarOpen ? 'translate-x-0 w-64' : '-translate-x-full md:translate-x-0'
           } ${isCollapsedDesktop ? 'md:w-16' : 'md:w-16 xl:w-64'}`}
         >
           {/* Brand Row */}
-          <div className="h-14 px-3.5 flex items-center justify-between border-b border-[#1E2230]">
+          <div className="h-14 px-3.5 flex items-center justify-between border-b border-black/[0.06] dark:border-white/[0.08]">
             <Link
               to="/"
-              className="flex items-center gap-2.5 text-[#F3F4F6] font-bold tracking-tight whitespace-nowrap overflow-hidden"
+              className="flex items-center gap-2.5 text-[#1D1D1F] dark:text-[#F5F5F7] font-semibold tracking-tight whitespace-nowrap overflow-hidden"
             >
-              <div className="w-7 h-7 rounded-md bg-[#4F46E5] flex items-center justify-center text-white font-mono text-xs font-bold shrink-0">
-                MC
+              <div className="w-7 h-7 rounded-lg bg-[#0071E3] flex items-center justify-center text-white shadow-xs shrink-0">
+                <Cloud className="w-4 h-4" />
               </div>
               <span
                 className={`text-[15px] ${
@@ -454,7 +432,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               type="button"
               onClick={toggleSidebarCollapsed}
               aria-label={isCollapsedDesktop ? 'Expand sidebar' : 'Collapse sidebar'}
-              className="hidden xl:flex p-1.5 text-[#8A94A6] hover:text-[#F3F4F6] rounded"
+              className="hidden xl:flex p-1.5 text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] rounded-lg"
             >
               {isCollapsedDesktop ? (
                 <PanelLeftOpen className="w-4 h-4" />
@@ -467,7 +445,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               type="button"
               onClick={() => setMobileSidebarOpen(false)}
               aria-label="Close navigation menu"
-              className="md:hidden p-1 text-[#8A94A6] hover:text-[#F3F4F6] rounded"
+              className="md:hidden p-1 text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] rounded"
             >
               <X className="w-4 h-4" />
             </button>
@@ -484,10 +462,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                   onClick={() => setMobileSidebarOpen(false)}
                   title={item.label}
                   className={({ isActive }) =>
-                    `flex items-center gap-3 px-2.5 py-2 rounded-md text-[13px] font-medium whitespace-nowrap ${
+                    `flex items-center gap-3 px-2.5 py-2 rounded-xl text-[13px] font-medium whitespace-nowrap tv-transition ${
                       isActive
-                        ? 'bg-[#131620] text-[#818CF8] border border-[#1E2230]'
-                        : 'text-[#8A94A6] hover:text-[#F3F4F6] hover:bg-[#131620]/60 border border-transparent'
+                        ? 'bg-[#0071E3] text-white shadow-xs'
+                        : 'text-[#6E6E73] dark:text-[#86868B] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] hover:bg-black/[0.04] dark:hover:bg-white/[0.05]'
                     }`
                   }
                 >
@@ -506,58 +484,64 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
           {/* Folder Tree Section */}
           <div
-            className={`flex-1 min-h-0 flex flex-col border-t border-[#1E2230] px-2 py-3 overflow-y-auto ${
+            className={`flex-1 min-h-0 flex flex-col border-t border-black/[0.06] dark:border-white/[0.08] px-2 py-3 overflow-y-auto ${
               isCollapsedDesktop ? 'md:hidden' : 'md:hidden xl:flex'
             }`}
           >
             <div className="px-2 mb-1.5 flex items-center justify-between">
-              <span className="text-[11px] font-medium text-[#8A94A6]">Folders</span>
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[#6E6E73] dark:text-[#86868B]">
+                Folders
+              </span>
             </div>
             <div role="tree" aria-label="Folder hierarchy" className="space-y-0.5">
               {renderFolderTreeNodes(null, 0)}
             </div>
           </div>
 
-          {/* External Cloud Storage & Platform Subscription Footer */}
+          {/* Storage & Subscription Footer */}
           <div
-            className={`mt-auto border-t border-[#1E2230] p-3 bg-[#0E1017] space-y-2.5 ${
+            className={`mt-auto border-t border-black/[0.06] dark:border-white/[0.08] p-3.5 bg-[#F5F5F7]/70 dark:bg-[#0B0C10]/70 space-y-2.5 ${
               isCollapsedDesktop ? 'md:hidden' : 'md:hidden xl:block'
             }`}
           >
             <div>
               <div className="flex items-center justify-between text-[11px] mb-1">
-                <span className="text-[#8A94A6] font-medium">Mounted Storage</span>
-                <span className="font-mono text-[#F3F4F6] tabular-nums">
+                <span className="text-[#6E6E73] dark:text-[#86868B] font-medium">
+                  Mounted Storage
+                </span>
+                <span className="font-mono text-[#1D1D1F] dark:text-[#F5F5F7] tabular-nums">
                   {formatBytes(totalUsedBytes)} / {formatBytes(totalAllocatedBytes)}
                 </span>
               </div>
-              <div className="w-full h-1.5 bg-[#131620] rounded-full overflow-hidden border border-[#1E2230]">
+              <div className="w-full h-1.5 bg-black/[0.08] dark:bg-white/[0.08] rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-[#4F46E5] origin-left tv-transition"
+                  className="h-full bg-[#0071E3] origin-left tv-transition"
                   style={{ transform: `scaleX(${storageRatio})` }}
                 />
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-[11px] font-mono text-[#8A94A6] pt-1 border-t border-[#1E2230]/60 tabular-nums">
+            <div className="flex items-center justify-between text-[11px] font-mono text-[#6E6E73] dark:text-[#86868B] pt-1 border-t border-black/[0.06] dark:border-white/[0.08] tabular-nums">
               <span>
-                <strong className="text-[#F3F4F6]">{currentPlan.name}</strong> · {externalCloudCount}/
-                {currentPlan.maxMounts} clouds
+                <strong className="text-[#1D1D1F] dark:text-[#F5F5F7]">{currentPlan.name}</strong> ·{' '}
+                {externalCloudCount}/{currentPlan.maxMounts} clouds
               </span>
-              <span>{formatBytes(quotaUsage.dailyRemainingBytes)} left today</span>
+              <span>{formatBytes(quotaUsage.dailyRemainingBytes)} left</span>
             </div>
 
             {currentAccount && (
-              <div className="pt-2 border-t border-[#1E2230] flex items-center justify-between gap-2 text-xs">
+              <div className="pt-2 border-t border-black/[0.06] dark:border-white/[0.08] flex items-center justify-between gap-2 text-xs">
                 <div className="min-w-0">
-                  <p className="font-medium text-[#F3F4F6] truncate">
+                  <p className="font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] truncate">
                     {currentAccount.displayName}
                   </p>
-                  <p className="text-[#8A94A6] text-[11px] truncate">{currentAccount.email}</p>
+                  <p className="text-[#6E6E73] dark:text-[#86868B] text-[11px] truncate">
+                    {currentAccount.email}
+                  </p>
                 </div>
                 <Link
                   to="/app/pricing"
-                  className="text-[11px] font-medium text-[#818CF8] hover:underline shrink-0"
+                  className="text-[11px] font-semibold text-[#0071E3] dark:text-[#0A84FF] hover:underline shrink-0"
                 >
                   {activePlanId === 'ultra' ? 'Manage' : 'Upgrade'}
                 </Link>
@@ -567,16 +551,16 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         </aside>
 
         {/* Main Content Column */}
-        <div className="flex-1 flex flex-col min-w-0 bg-[#0E1017]">
-          {/* 3-Zone Top Bar */}
-          <header className="h-14 px-4 lg:px-6 border-b border-[#1E2230] bg-[#090A0F] flex items-center justify-between gap-4 shrink-0">
+        <div className="flex-1 flex flex-col min-w-0 bg-[#F5F5F7] dark:bg-[#0B0C10]">
+          {/* Top Bar */}
+          <header className="h-14 px-4 lg:px-6 border-b border-black/[0.08] dark:border-white/[0.08] bg-white/85 dark:bg-[#15171E]/85 backdrop-blur-xl flex items-center justify-between gap-4 shrink-0">
             {/* Zone 1: Mobile Menu Trigger + Breadcrumb */}
             <div className="flex items-center gap-2 min-w-0">
               <button
                 type="button"
                 onClick={() => setMobileSidebarOpen(true)}
                 aria-label="Open navigation drawer"
-                className="md:hidden p-1.5 text-[#8A94A6] hover:text-[#F3F4F6] rounded"
+                className="md:hidden p-1.5 text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] rounded"
               >
                 <Menu className="w-4 h-4" />
               </button>
@@ -588,15 +572,15 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                     <React.Fragment key={`${crumb.id ?? 'root'}-${idx}`}>
                       {idx > 0 && (
                         <ChevronRight
-                          className="w-3.5 h-3.5 text-[#8A94A6] shrink-0"
+                          className="w-3.5 h-3.5 text-[#6E6E73] shrink-0"
                           aria-hidden="true"
                         />
                       )}
                       {crumb.isEllipsis ? (
-                        <span className="px-1.5 text-[#8A94A6] select-none">…</span>
+                        <span className="px-1.5 text-[#6E6E73] select-none">…</span>
                       ) : isLast ? (
                         <span
-                          className="font-medium text-[#F3F4F6] truncate max-w-[180px] sm:max-w-[260px]"
+                          className="font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] truncate max-w-[180px] sm:max-w-[260px]"
                           aria-current="page"
                         >
                           {crumb.name}
@@ -607,7 +591,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                           onClick={() =>
                             navigate(crumb.id ? `/app/files/${crumb.id}` : '/app/files')
                           }
-                          className="text-[#8A94A6] hover:text-[#F3F4F6] truncate max-w-[140px] whitespace-nowrap"
+                          className="text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] truncate max-w-[140px] whitespace-nowrap"
                         >
                           {crumb.name}
                         </button>
@@ -622,7 +606,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             <div className="flex items-center gap-2 flex-1 max-w-md justify-center">
               <div className="relative flex-1 min-w-[140px]">
                 <Search
-                  className="w-3.5 h-3.5 text-[#8A94A6] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                  className="w-3.5 h-3.5 text-[#6E6E73] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
                   aria-hidden="true"
                 />
                 <input
@@ -641,13 +625,13 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                   }}
                   placeholder={`Search files (/) or ${mod}K…`}
                   aria-label="Filter files by name"
-                  className="w-full h-8 pl-8 pr-14 rounded-md bg-[#131620] border border-[#1E2230] text-[13px] text-[#F3F4F6] placeholder-[#8A94A6]"
+                  className="w-full h-8 pl-8 pr-14 rounded-lg bg-[#F5F5F7] dark:bg-[#0B0C10] border border-black/[0.08] dark:border-white/[0.1] text-[13px] text-[#1D1D1F] dark:text-[#F5F5F7] placeholder-[#6E6E73]"
                 />
                 <button
                   type="button"
                   onClick={() => setCommandPaletteOpen(true)}
                   title="Open Command Palette"
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[11px] font-mono text-[#8A94A6] hover:text-[#F3F4F6] bg-[#090A0F] border border-[#1E2230] rounded"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[11px] font-mono text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] bg-white dark:bg-[#15171E] border border-black/[0.08] dark:border-white/[0.1] rounded"
                 >
                   {mod}K
                 </button>
@@ -656,17 +640,17 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               <div
                 role="group"
                 aria-label="Explorer layout view"
-                className="hidden sm:flex items-center p-0.5 rounded-md bg-[#131620] border border-[#1E2230] shrink-0"
+                className="hidden sm:flex items-center p-0.5 rounded-lg bg-[#F5F5F7] dark:bg-[#0B0C10] border border-black/[0.08] dark:border-white/[0.1] shrink-0"
               >
                 <button
                   type="button"
                   onClick={() => setExplorerView('table')}
                   aria-label="Table view"
                   aria-pressed={settings.explorerView === 'table'}
-                  className={`p-1.5 rounded ${
+                  className={`p-1.5 rounded-md ${
                     settings.explorerView === 'table'
-                      ? 'bg-[#1E2230] text-[#F3F4F6]'
-                      : 'text-[#8A94A6] hover:text-[#F3F4F6]'
+                      ? 'bg-white dark:bg-[#15171E] text-[#1D1D1F] dark:text-[#F5F5F7] shadow-2xs'
+                      : 'text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7]'
                   }`}
                 >
                   <List className="w-3.5 h-3.5" />
@@ -676,10 +660,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                   onClick={() => setExplorerView('grid')}
                   aria-label="Grid view"
                   aria-pressed={settings.explorerView === 'grid'}
-                  className={`p-1.5 rounded ${
+                  className={`p-1.5 rounded-md ${
                     settings.explorerView === 'grid'
-                      ? 'bg-[#1E2230] text-[#F3F4F6]'
-                      : 'text-[#8A94A6] hover:text-[#F3F4F6]'
+                      ? 'bg-white dark:bg-[#15171E] text-[#1D1D1F] dark:text-[#F5F5F7] shadow-2xs'
+                      : 'text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7]'
                   }`}
                 >
                   <LayoutGrid className="w-3.5 h-3.5" />
@@ -687,12 +671,30 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               </div>
             </div>
 
-            {/* Zone 3: 1 Primary Action (Upload Button) */}
-            <div className="flex items-center shrink-0">
+            {/* Zone 3: Theme Toggle + Shortcuts + Upload Button */}
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setTheme(isDarkTheme ? 'light' : 'dark')}
+                title="Toggle Light / Dark appearance"
+                className="p-2 rounded-lg text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+              >
+                {isDarkTheme ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShortcutsModalOpen(true)}
+                title="Keyboard shortcuts (?)"
+                className="hidden sm:flex p-2 rounded-lg text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+              >
+                <Keyboard className="w-4 h-4" />
+              </button>
+
               <button
                 type="button"
                 onClick={() => openUploadModal()}
-                className="flex items-center gap-2 px-3.5 py-1.5 rounded-md bg-[#4F46E5] hover:bg-[#4338CA] text-white text-[13px] font-medium whitespace-nowrap shrink-0"
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-[13px] font-semibold whitespace-nowrap shrink-0 shadow-xs"
               >
                 <Upload className="w-3.5 h-3.5" aria-hidden="true" />
                 <span>Upload</span>
@@ -709,23 +711,23 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           </main>
         </div>
 
-        {/* Full-Window Drag-and-Drop Overlay (§5) */}
+        {/* Full-Window Drag-and-Drop Overlay */}
         {isDraggingOverWindow && (
-          <div className="fixed inset-0 z-50 bg-[#090A0F]/85 border-2 border-dashed border-[#818CF8] flex flex-col items-center justify-center p-6 pointer-events-none">
-            <div className="p-4 rounded-full bg-[#131620] border border-[#1E2230] mb-3">
-              <Upload className="w-8 h-8 text-[#818CF8]" />
+          <div className="fixed inset-0 z-50 bg-black/75 border-2 border-dashed border-[#0071E3] flex flex-col items-center justify-center p-6 pointer-events-none">
+            <div className="p-4 rounded-full bg-white dark:bg-[#15171E] border border-black/[0.08] dark:border-white/[0.1] mb-3">
+              <Upload className="w-8 h-8 text-[#0071E3]" />
             </div>
-            <p className="text-lg font-bold text-[#F3F4F6]">Drop files to open Upload Configurator</p>
-            <p className="text-sm text-[#8A94A6] mt-1">
+            <p className="text-lg font-bold text-white">Drop files to open Upload Configurator</p>
+            <p className="text-sm text-gray-300 mt-1">
               Target folder and storage provider mount can be chosen before transfer starts
             </p>
           </div>
         )}
 
-        {/* Global Conversion-Focused Upgrade Prompt Modal (Requirement 8) */}
+        {/* Global Upgrade Prompt Modal */}
         {upgradePromptReason && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
             role="dialog"
             aria-modal="true"
             aria-labelledby="upgrade-modal-title"
@@ -733,11 +735,14 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               if (e.key === 'Escape') setUpgradePromptReason(null);
             }}
           >
-            <div className="w-full max-w-lg rounded-lg bg-[#131620] border border-[#818CF8] overflow-hidden">
-              <div className="px-5 py-4 border-b border-[#1E2230] flex items-center justify-between bg-[#090A0F]">
+            <div className="w-full max-w-lg apple-card overflow-hidden">
+              <div className="px-5 py-4 border-b border-black/[0.06] dark:border-white/[0.08] flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-[#818CF8]" />
-                  <h2 id="upgrade-modal-title" className="text-[15px] font-bold text-[#F3F4F6]">
+                  <Sparkles className="w-4 h-4 text-[#0071E3]" />
+                  <h2
+                    id="upgrade-modal-title"
+                    className="text-sm font-bold text-[#1D1D1F] dark:text-[#F5F5F7]"
+                  >
                     Plan Limit Reached — Upgrade Your Subscription
                   </h2>
                 </div>
@@ -745,42 +750,40 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                   type="button"
                   onClick={() => setUpgradePromptReason(null)}
                   aria-label="Close upgrade prompt"
-                  className="p-1 text-[#8A94A6] hover:text-[#F3F4F6] rounded"
+                  className="p-1 text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7] rounded"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
               <div className="p-5 space-y-4">
-                <div className="p-3.5 rounded-md bg-[#F59E0B]/10 border border-[#F59E0B]/30 text-xs text-[#F59E0B] leading-relaxed">
+                <div className="p-3.5 rounded-xl bg-[#FF9F0A]/15 border border-[#FF9F0A]/30 text-xs text-[#D97706] dark:text-[#FFD60A] leading-relaxed">
                   {upgradePromptReason}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {/* PRO Recommendation */}
-                  <div className="p-4 rounded-lg bg-[#0E1017] border border-[#818CF8] flex flex-col justify-between gap-3">
+                  <div className="p-4 rounded-xl bg-[#F5F5F7] dark:bg-[#0B0C10] border border-[#0071E3] flex flex-col justify-between gap-3">
                     <div>
                       <div className="flex items-center justify-between">
-                        <span className="text-sm font-bold text-[#F3F4F6]">{plans.pro.name}</span>
-                        <span className="text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#4F46E5] text-white">
+                        <span className="text-sm font-bold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                          {plans.pro.name}
+                        </span>
+                        <span className="text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#0071E3] text-white">
                           Most Popular
                         </span>
                       </div>
-                      <p className="font-mono text-lg font-bold text-[#818CF8] mt-1">
+                      <p className="font-mono text-lg font-bold text-[#0071E3] mt-1">
                         ₹{plans.pro.baseMonthlyInr}/mo
                       </p>
-                      <ul className="mt-2 space-y-1 text-xs text-[#8A94A6]">
+                      <ul className="mt-2 space-y-1 text-xs text-[#6E6E73] dark:text-[#86868B]">
                         <li className="flex items-center gap-1.5">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
+                          <CheckCircle2 className="w-3.5 h-3.5 text-[#28CD41] shrink-0" />
                           <span>Up to {plans.pro.maxMounts} cloud accounts</span>
                         </li>
                         <li className="flex items-center gap-1.5">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
+                          <CheckCircle2 className="w-3.5 h-3.5 text-[#28CD41] shrink-0" />
                           <span>{plans.pro.dailyTransferLimitGB} GB/day transfers</span>
-                        </li>
-                        <li className="flex items-center gap-1.5">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
-                          <span>Auto-organization & schedules</span>
                         </li>
                       </ul>
                     </div>
@@ -790,42 +793,36 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                         onClick={async () => {
                           await switchSubscriptionPlan('pro', settings.subscription.billingCycle);
                           setUpgradePromptReason(null);
-                          addToast({
-                            title: 'Upgraded workspace to PRO (₹199/mo)',
-                            variant: 'success',
-                          });
                         }}
-                        className="w-full py-1.5 rounded bg-[#4F46E5] hover:bg-[#4338CA] text-white text-xs font-medium"
+                        className="w-full py-2 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold"
                       >
-                        Instant Upgrade to PRO
+                        Upgrade to PRO
                       </button>
                     )}
                   </div>
 
                   {/* ULTRA Premium */}
-                  <div className="p-4 rounded-lg bg-[#0E1017] border border-[#F59E0B]/50 flex flex-col justify-between gap-3">
+                  <div className="p-4 rounded-xl bg-[#F5F5F7] dark:bg-[#0B0C10] border border-[#FF9F0A]/50 flex flex-col justify-between gap-3">
                     <div>
                       <div className="flex items-center justify-between">
-                        <span className="text-sm font-bold text-[#F3F4F6]">{plans.ultra.name}</span>
-                        <span className="text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#F59E0B]/20 text-[#F59E0B] border border-[#F59E0B]/40">
+                        <span className="text-sm font-bold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                          {plans.ultra.name}
+                        </span>
+                        <span className="text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-[#FF9F0A]/20 text-[#D97706] dark:text-[#FFD60A]">
                           Premium Tier
                         </span>
                       </div>
-                      <p className="font-mono text-lg font-bold text-[#F59E0B] mt-1">
+                      <p className="font-mono text-lg font-bold text-[#D97706] dark:text-[#FFD60A] mt-1">
                         ₹{plans.ultra.baseMonthlyInr}/mo
                       </p>
-                      <ul className="mt-2 space-y-1 text-xs text-[#8A94A6]">
+                      <ul className="mt-2 space-y-1 text-xs text-[#6E6E73] dark:text-[#86868B]">
                         <li className="flex items-center gap-1.5">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
+                          <CheckCircle2 className="w-3.5 h-3.5 text-[#28CD41] shrink-0" />
                           <span>Up to {plans.ultra.maxMounts} cloud accounts</span>
                         </li>
                         <li className="flex items-center gap-1.5">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
+                          <CheckCircle2 className="w-3.5 h-3.5 text-[#28CD41] shrink-0" />
                           <span>{plans.ultra.dailyTransferLimitGB} GB/day transfers</span>
-                        </li>
-                        <li className="flex items-center gap-1.5">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
-                          <span>Cross-cloud sync & max priority</span>
                         </li>
                       </ul>
                     </div>
@@ -835,24 +832,20 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                         onClick={async () => {
                           await switchSubscriptionPlan('ultra', settings.subscription.billingCycle);
                           setUpgradePromptReason(null);
-                          addToast({
-                            title: 'Upgraded workspace to ULTRA (₹499/mo)',
-                            variant: 'success',
-                          });
                         }}
-                        className="w-full py-1.5 rounded bg-[#F59E0B] hover:bg-[#D97706] text-black text-xs font-bold"
+                        className="w-full py-2 rounded-xl bg-[#FF9F0A] hover:bg-[#D97706] text-black text-xs font-bold"
                       >
-                        Instant Upgrade to ULTRA
+                        Upgrade to ULTRA
                       </button>
                     )}
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between pt-2 border-t border-[#1E2230]">
+                <div className="flex items-center justify-between pt-2 border-t border-black/[0.06] dark:border-white/[0.08]">
                   <button
                     type="button"
                     onClick={() => setUpgradePromptReason(null)}
-                    className="text-xs text-[#8A94A6] hover:text-[#F3F4F6]"
+                    className="text-xs text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-[#F5F5F7]"
                   >
                     Dismiss
                   </button>
@@ -862,7 +855,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                       setUpgradePromptReason(null);
                       navigate('/app/pricing');
                     }}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-[#818CF8] hover:underline"
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-[#0071E3] hover:underline"
                   >
                     <span>Compare all plans & quotas</span>
                     <ArrowUpRight className="w-3.5 h-3.5" />

@@ -27,10 +27,12 @@ import {
   type WorkspaceSettings,
 } from '../types/domain';
 import {
+  BoxAdapter,
   DropboxAdapter,
   GoogleDriveAdapter,
   IndexedDBStorageAdapter,
   OneDriveAdapter,
+  PCloudAdapter,
   S3CompatibleAdapter,
   SimulatedCloudAdapter,
   WebDAVAdapter,
@@ -1352,6 +1354,75 @@ export class StorageOrchestrator {
     await vaultRepository.deleteMountAndFiles(mountId, mountFiles);
     vaultRepository.notifyBroadcast();
     this.stateMutatedCallback();
+  }
+
+  public async syncRemoteMountFiles(
+    mountId: string,
+    targetFolderId: string | null = null
+  ): Promise<{ syncedCount: number }> {
+    const mounts = await vaultRepository.getAllMounts();
+    const mount = mounts.find((m) => m.id === mountId);
+    if (!mount || mount.status !== 'connected') {
+      throw new Error('Mount is not connected.');
+    }
+
+    const adapter = this.getAdapterForMount(mount);
+    if (!adapter.listFiles) {
+      return { syncedCount: 0 };
+    }
+
+    const remoteItems = await adapter.listFiles(mount, null);
+    const existingNodes = await vaultRepository.getAllNodes();
+    const existingIds = new Set(existingNodes.map((n) => n.id));
+    const nodesToInsert: VaultNode[] = [];
+    const now = Date.now();
+
+    for (const item of remoteItems) {
+      const nodeId = `${mount.id}_${item.id}`;
+      if (existingIds.has(nodeId)) continue;
+
+      if (item.isFolder) {
+        nodesToInsert.push({
+          id: nodeId,
+          parentId: targetFolderId,
+          name: item.name,
+          type: 'folder',
+          starred: false,
+          trashedAt: null,
+          trashedFromParentId: null,
+          createdAt: item.modifiedTime || now,
+          updatedAt: item.modifiedTime || now,
+        });
+      } else {
+        const ext = item.name.includes('.') ? item.name.split('.').pop()!.toLowerCase() : '';
+        nodesToInsert.push({
+          id: nodeId,
+          parentId: targetFolderId,
+          name: item.name,
+          type: 'file',
+          providerId: mount.id,
+          mimeType: item.mimeType || 'application/octet-stream',
+          extension: ext,
+          sizeBytes: item.sizeBytes,
+          checksumSha256: null,
+          hasBlob: true,
+          hasThumb: false,
+          starred: false,
+          trashedAt: null,
+          trashedFromParentId: null,
+          createdAt: item.modifiedTime || now,
+          updatedAt: item.modifiedTime || now,
+        });
+      }
+    }
+
+    if (nodesToInsert.length > 0) {
+      await vaultRepository.putNodes(nodesToInsert);
+      vaultRepository.notifyBroadcast();
+      this.stateMutatedCallback();
+    }
+
+    return { syncedCount: nodesToInsert.length };
   }
 
   public async resetWorkspace(): Promise<void> {

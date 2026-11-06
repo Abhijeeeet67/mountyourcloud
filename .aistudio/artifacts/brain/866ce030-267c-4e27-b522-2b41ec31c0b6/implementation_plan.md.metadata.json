@@ -1,0 +1,6 @@
+{
+  "summary": "Implementation plan to wire all frontend (import.meta.env) and backend (process.env) environment variables with automatic alias resolution, connect Google and OneDrive OAuth Client IDs with iframe-safe popup flows, initialize Razorpay Checkout with recurring Plan IDs and Order fallback, and resolve preview runtime errors.",
+  "updatedAt": "2026-11-05T15:55:41.967315118Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

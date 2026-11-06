@@ -1,16 +1,20 @@
 import { create } from 'zustand';
-import {
-  DEMO_ACCOUNT_EMAIL,
-  DEMO_ACCOUNT_NAME,
-} from '../lib/constants';
 import { generateSaltHex, hashPasswordPBKDF2 } from '../lib/crypto';
+import { clientEnv } from '../lib/env';
+import { getAuthorizedHeaders, setClientSessionToken } from '../lib/oauth';
 import {
   DEFAULT_PLANS,
   checkPlanSwitchAllowed,
-  getBilledTotalInr,
   getEffectivePlans,
   normalizePlanId,
 } from '../lib/pricing';
+import {
+  getActiveSupabaseSession,
+  getSupabaseClient,
+  getSupabaseOAuthRedirectUrl,
+  isSupabaseConfigured,
+  mapSupabaseUserToProfile,
+} from '../lib/supabase';
 import { storageOrchestrator } from '../storage/orchestrator';
 import { isEffectivelyTrashed, vaultRepository } from '../storage/repository';
 import type {
@@ -27,6 +31,7 @@ import type {
   ScheduledTransferJob,
   SortDirection,
   SortField,
+  ThemePreference,
   ToastMessage,
   UploadJob,
   VaultNode,
@@ -40,6 +45,9 @@ interface VaultStoreState {
   versionChangeDetected: boolean;
 
   currentAccount: Account | null;
+  isAdmin: boolean;
+  authProvider: string;
+  emailVerified: boolean;
   connectedAccounts: ConnectedCloudAccount[];
   mounts: ProviderMount[];
   nodes: VaultNode[];
@@ -47,13 +55,24 @@ interface VaultStoreState {
   settings: WorkspaceSettings;
   uploadJobs: UploadJob[];
 
+  // Billing gateway status
+  razorpayConfigured: boolean;
+  razorpayMode: 'test' | 'live';
+  razorpayKeyId: string | null;
+  razorpayPlanIds: {
+    proMonthly: string;
+    proAnnual: string;
+    ultraMonthly: string;
+    ultraAnnual: string;
+  };
+
   // Explorer UI state
   currentFolderId: string | null;
   selectedNodeIds: string[];
   focusedNodeId: string | null;
   searchQuery: string;
   categoryFilter: FileCategory;
-  providerFilter: string; // 'all' or mount.id
+  providerFilter: string;
   expandedTreeFolderIds: string[];
 
   // Global Modals & Drawers
@@ -81,11 +100,18 @@ interface VaultStoreState {
 
   // Auth Actions
   loginWithPassword: (email: string, password: string) => Promise<void>;
-  registerAccount: (email: string, displayName: string, password: string) => Promise<void>;
-  resetPasswordLocal: (email: string, newPassword: string) => Promise<void>;
-  launchDemoWorkspace: () => Promise<void>;
+  registerAccount: (email: string, displayName: string, password: string) => Promise<{ requiresEmailConfirmation?: boolean }>;
+  completeSocialOAuthLogin: (payload: {
+    email: string;
+    displayName: string;
+    provider: string;
+    sessionToken?: string;
+  }) => Promise<void>;
+  requestPasswordResetEmail: (email: string, fallbackNewPassword?: string) => Promise<string>;
   signOut: () => Promise<void>;
   updateProfile: (displayName: string) => Promise<void>;
+  deleteUserAccount: () => Promise<void>;
+  exportLocalWorkspaceData: () => Promise<void>;
 
   // Explorer & View Actions
   setCurrentFolderId: (folderId: string | null) => void;
@@ -96,6 +122,7 @@ interface VaultStoreState {
   setProviderFilter: (providerId: string) => void;
   toggleTreeFolder: (folderId: string, forceExpanded?: boolean) => void;
   setExplorerView: (view: ExplorerViewMode) => Promise<void>;
+  setTheme: (theme: ThemePreference) => Promise<void>;
   setSorting: (field: SortField, direction?: SortDirection) => Promise<void>;
   toggleSidebarCollapsed: () => Promise<void>;
   toggleInspectorOpen: (force?: boolean) => Promise<void>;
@@ -111,7 +138,8 @@ interface VaultStoreState {
   setMoveModalNodeIds: (nodeIds: string[] | null) => void;
   setMobileSidebarOpen: (open: boolean) => void;
 
-  // Subscription, Admin Config, Automation & Dev Actions
+  // Subscription, Admin Config & Automation Actions
+  fetchBillingStatus: () => Promise<void>;
   switchSubscriptionPlan: (planId: PlanId, billingCycle: BillingCycle) => Promise<void>;
   cancelSubscription: () => Promise<void>;
   updateCustomPlanConfig: (planId: PlanId, updatedPlan: PlanDefinition) => Promise<void>;
@@ -122,14 +150,8 @@ interface VaultStoreState {
   toggleScheduledTransfer: (jobId: string) => Promise<void>;
   runScheduledTransferNow: (jobId: string) => Promise<void>;
   deleteScheduledTransfer: (jobId: string) => Promise<void>;
-  updateTelegramWebhookSim: (
-    patch: Partial<NonNullable<WorkspaceSettings['telegramWebhookSim']>>
-  ) => Promise<void>;
   updateDeveloperSettings: (dev: Partial<DeveloperSettings>) => Promise<void>;
   updateApiCredentials: (creds: Record<string, string>) => Promise<void>;
-  generateDemoToken: (name: string) => Promise<string>;
-  revokeDemoToken: (tokenId: string) => Promise<void>;
-  resetSampleWorkspace: () => Promise<void>;
 
   // Connected Cloud OAuth Accounts
   fetchConnectedAccounts: () => Promise<void>;
@@ -144,19 +166,13 @@ const DEFAULT_SETTINGS: WorkspaceSettings = {
   sidebarCollapsed: false,
   inspectorOpen: true,
   subscription: {
-    planId: 'pro',
+    planId: 'free',
     billingCycle: 'monthly',
     cancelledAt: null,
     invoices: [],
   },
   customPlans: structuredClone(DEFAULT_PLANS),
   scheduledTransfers: [],
-  telegramWebhookSim: {
-    enabled: true,
-    botHandle: '@MountYourCloudsNotifyBot',
-    notifyOnUpload: true,
-    notifyOnQuotaWarn: true,
-  },
   devSettings: {
     failureRate: 0,
     offline: false,
@@ -167,6 +183,32 @@ const DEFAULT_SETTINGS: WorkspaceSettings = {
 
 const announcedJobStates = new Map<string, string>();
 
+async function syncBackendSession(params: {
+  userId?: string;
+  email: string;
+  displayName: string;
+  provider?: string;
+}): Promise<{ isAdmin: boolean }> {
+  try {
+    const res = await fetch('/api/auth/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(params),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.token && !isSupabaseConfigured) {
+        setClientSessionToken(data.token);
+      }
+      return { isAdmin: Boolean(data.user?.isAdmin) };
+    }
+  } catch {
+    // Offline or standalone test environment
+  }
+  return { isAdmin: false };
+}
+
 export const useVaultStore = create<VaultStoreState>((set, get) => ({
   initialized: false,
   initializing: false,
@@ -174,6 +216,9 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   versionChangeDetected: false,
 
   currentAccount: null,
+  isAdmin: false,
+  authProvider: 'email',
+  emailVerified: true,
   connectedAccounts: [],
   mounts: [],
   nodes: [],
@@ -181,13 +226,18 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   uploadJobs: [],
 
+  razorpayConfigured: Boolean(clientEnv.razorpayKeyId),
+  razorpayMode: clientEnv.razorpayMode,
+  razorpayKeyId: clientEnv.razorpayKeyId || null,
+  razorpayPlanIds: clientEnv.razorpayPlanIds,
+
   currentFolderId: null,
   selectedNodeIds: [],
   focusedNodeId: null,
   searchQuery: '',
   categoryFilter: 'all',
   providerFilter: 'all',
-  expandedTreeFolderIds: ['fld-engineering', 'fld-design'],
+  expandedTreeFolderIds: [],
 
   commandPaletteOpen: false,
   shortcutsModalOpen: false,
@@ -224,8 +274,66 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
       get().refreshFromStorage();
     });
 
+    // Check active Supabase session if configured and listen for OAuth callback sign-in events
+    if (isSupabaseConfigured) {
+      const sbSession = await getActiveSupabaseSession();
+      if (sbSession?.user) {
+        const profile = mapSupabaseUserToProfile(sbSession.user);
+        const { isAdmin } = await syncBackendSession({
+          userId: profile.id,
+          email: profile.email,
+          displayName: profile.displayName,
+          provider: profile.provider,
+        });
+        await vaultRepository.putAccount({
+          email: profile.email,
+          displayName: profile.displayName,
+          passwordHash: 'supabase_managed',
+          salt: 'supabase',
+          createdAt: profile.createdAt,
+        });
+        const curSettings = (await vaultRepository.getMeta<WorkspaceSettings>('settings')) ?? DEFAULT_SETTINGS;
+        await vaultRepository.setMeta('settings', {
+          ...curSettings,
+          activeAccountEmail: profile.email,
+        });
+        set({
+          isAdmin,
+          authProvider: profile.provider,
+          emailVerified: profile.emailVerified,
+        });
+      }
+
+      const sbClient = getSupabaseClient();
+      sbClient?.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' && session?.user) {
+          const profile = mapSupabaseUserToProfile(session.user);
+          const currentEmail = get().currentAccount?.email?.toLowerCase();
+          if (currentEmail !== profile.email.toLowerCase()) {
+            await get().completeSocialOAuthLogin({
+              email: profile.email,
+              displayName: profile.displayName,
+              provider: profile.provider,
+              sessionToken: session.access_token,
+            });
+          }
+        }
+      });
+    }
+
     await get().refreshFromStorage();
-    await get().fetchConnectedAccounts();
+
+    // If a session exists, verify with backend /api/auth/me and load connected accounts + billing
+    const activeAcc = get().currentAccount;
+    if (activeAcc) {
+      const { isAdmin } = await syncBackendSession({
+        email: activeAcc.email,
+        displayName: activeAcc.displayName,
+      });
+      set({ isAdmin });
+      await Promise.all([get().fetchConnectedAccounts(), get().fetchBillingStatus()]);
+    }
+
     set({ initialized: true, initializing: false });
   },
 
@@ -250,8 +358,6 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
       customPlans: getEffectivePlans(rawSettings.customPlans),
       scheduledTransfers:
         rawSettings.scheduledTransfers ?? DEFAULT_SETTINGS.scheduledTransfers,
-      telegramWebhookSim:
-        rawSettings.telegramWebhookSim ?? DEFAULT_SETTINGS.telegramWebhookSim,
     };
 
     let currentAccount: Account | null = null;
@@ -310,22 +416,75 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   },
 
   loginWithPassword: async (email, password) => {
-    const acc = await vaultRepository.getAccount(email);
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail.includes('@')) {
+      throw new Error('Please enter a valid email address.');
+    }
+
+    const sb = getSupabaseClient();
+    if (sb) {
+      const { data, error } = await sb.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
+      if (error || !data.user) {
+        throw new Error(error?.message || 'Invalid email or password.');
+      }
+      setClientSessionToken(data.session?.access_token ?? null);
+      const profile = mapSupabaseUserToProfile(data.user);
+      const { isAdmin } = await syncBackendSession({
+        userId: profile.id,
+        email: profile.email,
+        displayName: profile.displayName,
+        provider: profile.provider,
+      });
+
+      const acc: Account = {
+        email: profile.email,
+        displayName: profile.displayName,
+        passwordHash: 'supabase_managed',
+        salt: 'supabase',
+        createdAt: profile.createdAt,
+      };
+      await vaultRepository.putAccount(acc);
+
+      const nextSettings: WorkspaceSettings = {
+        ...get().settings,
+        activeAccountEmail: acc.email,
+      };
+      await vaultRepository.setMeta('settings', nextSettings);
+      set({ isAdmin, authProvider: profile.provider, emailVerified: profile.emailVerified });
+      vaultRepository.notifyBroadcast();
+      await get().refreshFromStorage();
+      await Promise.all([get().fetchConnectedAccounts(), get().fetchBillingStatus()]);
+      return;
+    }
+
+    // Verified PBKDF2-SHA256 + Server Session fallback when external Supabase URL is not yet configured
+    const acc = await vaultRepository.getAccount(cleanEmail);
     if (!acc) {
-      throw new Error('No local demo account found with that email address.');
+      throw new Error('No account found with that email address. Please create an account first.');
     }
     const candidateHash = await hashPasswordPBKDF2(password, acc.salt, 600_000);
     if (candidateHash !== acc.passwordHash) {
-      throw new Error('Incorrect password for this local demo account.');
+      throw new Error('Invalid email or password.');
     }
+
+    const { isAdmin } = await syncBackendSession({
+      email: acc.email,
+      displayName: acc.displayName,
+      provider: 'email',
+    });
 
     const nextSettings: WorkspaceSettings = {
       ...get().settings,
       activeAccountEmail: acc.email,
     };
     await vaultRepository.setMeta('settings', nextSettings);
+    set({ isAdmin, authProvider: 'email', emailVerified: true });
     vaultRepository.notifyBroadcast();
     await get().refreshFromStorage();
+    await Promise.all([get().fetchConnectedAccounts(), get().fetchBillingStatus()]);
   },
 
   registerAccount: async (email, displayName, password) => {
@@ -335,15 +494,61 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
       throw new Error('Please enter a valid email address.');
     }
     if (!cleanName) {
-      throw new Error('Display name is required.');
+      throw new Error('Full name is required.');
     }
-    if (password.length < 6) {
-      throw new Error('Password must be at least 6 characters.');
+    if (password.length < 8) {
+      throw new Error('Password must be at least 8 characters.');
+    }
+
+    const sb = getSupabaseClient();
+    if (sb) {
+      const { data, error } = await sb.auth.signUp({
+        email: cleanEmail,
+        password,
+        options: {
+          data: { full_name: cleanName, name: cleanName },
+          emailRedirectTo: getSupabaseOAuthRedirectUrl('/app/overview'),
+        },
+      });
+      if (error) {
+        throw new Error(error.message);
+      }
+      if (data.user && !data.session) {
+        return { requiresEmailConfirmation: true };
+      }
+      if (data.user && data.session) {
+        setClientSessionToken(data.session.access_token);
+        const profile = mapSupabaseUserToProfile(data.user);
+        const { isAdmin } = await syncBackendSession({
+          userId: profile.id,
+          email: profile.email,
+          displayName: cleanName,
+          provider: 'email',
+        });
+        const newAcc: Account = {
+          email: profile.email,
+          displayName: cleanName,
+          passwordHash: 'supabase_managed',
+          salt: 'supabase',
+          createdAt: Date.now(),
+        };
+        await vaultRepository.putAccount(newAcc);
+        const nextSettings: WorkspaceSettings = {
+          ...get().settings,
+          activeAccountEmail: newAcc.email,
+        };
+        await vaultRepository.setMeta('settings', nextSettings);
+        set({ isAdmin, authProvider: 'email', emailVerified: profile.emailVerified });
+        vaultRepository.notifyBroadcast();
+        await get().refreshFromStorage();
+        await Promise.all([get().fetchConnectedAccounts(), get().fetchBillingStatus()]);
+        return { requiresEmailConfirmation: false };
+      }
     }
 
     const existing = await vaultRepository.getAccount(cleanEmail);
     if (existing) {
-      throw new Error('An account with this email already exists in this browser.');
+      throw new Error('An account with this email address is already registered.');
     }
 
     const salt = generateSaltHex(16);
@@ -357,65 +562,112 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     };
 
     await vaultRepository.putAccount(newAcc);
+    const { isAdmin } = await syncBackendSession({
+      email: newAcc.email,
+      displayName: newAcc.displayName,
+      provider: 'email',
+    });
+
     const nextSettings: WorkspaceSettings = {
       ...get().settings,
       activeAccountEmail: newAcc.email,
     };
     await vaultRepository.setMeta('settings', nextSettings);
+    set({ isAdmin, authProvider: 'email', emailVerified: true });
     vaultRepository.notifyBroadcast();
     await get().refreshFromStorage();
+    await Promise.all([get().fetchConnectedAccounts(), get().fetchBillingStatus()]);
+    return { requiresEmailConfirmation: false };
   },
 
-  resetPasswordLocal: async (email, newPassword) => {
+  completeSocialOAuthLogin: async ({ email, displayName, provider, sessionToken }) => {
+    const cleanEmail = (email || `${provider}_user@mountyourclouds.com`).trim().toLowerCase();
+    const cleanName = (displayName || cleanEmail.split('@')[0] || 'User').trim();
+    if (sessionToken) {
+      setClientSessionToken(sessionToken);
+    }
+
+    const { isAdmin } = await syncBackendSession({
+      email: cleanEmail,
+      displayName: cleanName,
+      provider,
+    });
+
+    const acc: Account = {
+      email: cleanEmail,
+      displayName: cleanName,
+      passwordHash: 'oauth_managed',
+      salt: provider,
+      createdAt: Date.now(),
+    };
+    await vaultRepository.putAccount(acc);
+
+    const nextSettings: WorkspaceSettings = {
+      ...get().settings,
+      activeAccountEmail: acc.email,
+    };
+    await vaultRepository.setMeta('settings', nextSettings);
+    set({ isAdmin, authProvider: provider, emailVerified: true });
+    vaultRepository.notifyBroadcast();
+    await get().refreshFromStorage();
+    await Promise.all([get().fetchConnectedAccounts(), get().fetchBillingStatus()]);
+  },
+
+  requestPasswordResetEmail: async (email, fallbackNewPassword) => {
     const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail.includes('@')) {
+      throw new Error('Please enter a valid email address.');
+    }
+
+    const sb = getSupabaseClient();
+    if (sb) {
+      const { error } = await sb.auth.resetPasswordForEmail(cleanEmail, {
+        redirectTo: getSupabaseOAuthRedirectUrl('/auth'),
+      });
+      if (error) {
+        throw new Error(error.message);
+      }
+      return `Password recovery link sent to ${cleanEmail}. Check your inbox to complete the reset.`;
+    }
+
+    if (!fallbackNewPassword || fallbackNewPassword.length < 8) {
+      throw new Error('Please enter a new password of at least 8 characters.');
+    }
+
     const existing = await vaultRepository.getAccount(cleanEmail);
     if (!existing) {
-      throw new Error('No local demo account exists for that email address.');
-    }
-    if (newPassword.length < 6) {
-      throw new Error('New password must be at least 6 characters.');
+      throw new Error('No account found for that email address.');
     }
 
     const newSalt = generateSaltHex(16);
-    const passwordHash = await hashPasswordPBKDF2(newPassword, newSalt, 600_000);
+    const passwordHash = await hashPasswordPBKDF2(fallbackNewPassword, newSalt, 600_000);
     await vaultRepository.putAccount({
       ...existing,
       salt: newSalt,
       passwordHash,
     });
     vaultRepository.notifyBroadcast();
-  },
-
-  launchDemoWorkspace: async () => {
-    let demoAcc = await vaultRepository.getAccount(DEMO_ACCOUNT_EMAIL);
-    if (!demoAcc) {
-      const salt = generateSaltHex(16);
-      const passwordHash = await hashPasswordPBKDF2('demo-vault-password', salt, 600_000);
-      demoAcc = {
-        email: DEMO_ACCOUNT_EMAIL,
-        displayName: DEMO_ACCOUNT_NAME,
-        passwordHash,
-        salt,
-        createdAt: Date.now(),
-      };
-      await vaultRepository.putAccount(demoAcc);
-    }
-
-    const nextSettings: WorkspaceSettings = {
-      ...get().settings,
-      activeAccountEmail: demoAcc.email,
-    };
-    await vaultRepository.setMeta('settings', nextSettings);
-    vaultRepository.notifyBroadcast();
-    await get().refreshFromStorage();
+    return 'Account password updated. You can now sign in with your new password.';
   },
 
   signOut: async () => {
+    const sb = getSupabaseClient();
+    if (sb) {
+      await sb.auth.signOut().catch(() => {});
+    }
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch {
+      // Ignore
+    }
+    setClientSessionToken(null);
+
     const nextSettings: WorkspaceSettings = {
       ...get().settings,
       activeAccountEmail: null,
     };
     await vaultRepository.setMeta('settings', nextSettings);
+    set({ isAdmin: false, connectedAccounts: [] });
     vaultRepository.notifyBroadcast();
     await get().refreshFromStorage();
   },
@@ -425,12 +677,50 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     if (!acc) return;
     const clean = displayName.trim();
     if (!clean) throw new Error('Display name cannot be empty.');
+
+    const sb = getSupabaseClient();
+    if (sb) {
+      await sb.auth.updateUser({ data: { full_name: clean, name: clean } }).catch(() => {});
+    }
+
     await vaultRepository.putAccount({
       ...acc,
       displayName: clean,
     });
+    await syncBackendSession({ email: acc.email, displayName: clean });
     vaultRepository.notifyBroadcast();
     await get().refreshFromStorage();
+  },
+
+  deleteUserAccount: async () => {
+    try {
+      const res = await fetch('/api/auth/account', {
+        method: 'DELETE',
+        headers: getAuthorizedHeaders(),
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to delete account on server.');
+      }
+    } catch (err) {
+      throw err instanceof Error ? err : new Error('Failed to delete account.');
+    }
+
+    await get().signOut();
+  },
+
+  exportLocalWorkspaceData: async () => {
+    const bundle = await vaultRepository.exportGenuineUserData();
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mountyourclouds-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   },
 
   setCurrentFolderId: (folderId) => {
@@ -481,6 +771,22 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     await vaultRepository.setMeta('settings', nextSettings);
   },
 
+  setTheme: async (theme) => {
+    const nextSettings: WorkspaceSettings = {
+      ...get().settings,
+      theme,
+    };
+    if (typeof document !== 'undefined') {
+      const prefersDark =
+        typeof window !== 'undefined' &&
+        window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+      const shouldBeDark = theme === 'dark' || (theme === 'system' && prefersDark);
+      document.documentElement.classList.toggle('dark', shouldBeDark);
+    }
+    set({ settings: nextSettings });
+    await vaultRepository.setMeta('settings', nextSettings);
+  },
+
   setSorting: async (field, direction) => {
     const cur = get().settings;
     const nextDir: SortDirection =
@@ -526,52 +832,231 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   setMoveModalNodeIds: (nodeIds) => set({ moveModalNodeIds: nodeIds }),
   setMobileSidebarOpen: (open) => set({ mobileSidebarOpen: open }),
 
+  fetchBillingStatus: async () => {
+    try {
+      const res = await fetch('/api/billing/subscription', {
+        headers: getAuthorizedHeaders(),
+        credentials: 'include',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const serverPlans = data.razorpayPlanIds || {};
+      const fallbackPlans = clientEnv.razorpayPlanIds;
+
+      set({
+        razorpayConfigured: Boolean(data.razorpayConfigured || clientEnv.razorpayKeyId),
+        razorpayMode:
+          data.razorpayMode === 'live' || clientEnv.razorpayMode === 'live' ? 'live' : 'test',
+        razorpayKeyId: data.razorpayKeyId || clientEnv.razorpayKeyId || null,
+        razorpayPlanIds: {
+          proMonthly: serverPlans.proMonthly || fallbackPlans.proMonthly || '',
+          proAnnual: serverPlans.proAnnual || fallbackPlans.proAnnual || '',
+          ultraMonthly: serverPlans.ultraMonthly || fallbackPlans.ultraMonthly || '',
+          ultraAnnual: serverPlans.ultraAnnual || fallbackPlans.ultraAnnual || '',
+        },
+      });
+
+      if (data.subscription) {
+        const cur = get().settings;
+        const nextSettings: WorkspaceSettings = {
+          ...cur,
+          subscription: {
+            planId: normalizePlanId(data.subscription.planId),
+            billingCycle: data.subscription.billingCycle || 'monthly',
+            cancelledAt: data.subscription.cancelledAt ?? null,
+            invoices: data.subscription.invoices ?? [],
+          },
+        };
+        await vaultRepository.setMeta('settings', nextSettings);
+        set({ settings: nextSettings });
+      }
+    } catch {
+      // Offline or test runner
+    }
+  },
+
   switchSubscriptionPlan: async (planId, billingCycle) => {
-    const { mounts, settings } = get();
+    const { mounts, settings, razorpayPlanIds } = get();
     const plans = getEffectivePlans(settings.customPlans);
-    const targetPlan = plans[planId];
-    const externalMountsCount = Math.max(0, mounts.length - 1);
+    const externalMountsCount = Math.max(0, mounts.filter((m) => m.kind !== 'local').length);
     const check = checkPlanSwitchAllowed(planId, externalMountsCount, plans);
     if (!check.allowed) {
       throw new Error(check.reason ?? 'Plan downgrade blocked.');
     }
 
-    const billedInr = getBilledTotalInr(targetPlan, billingCycle);
-    const newInvoices = [...settings.subscription.invoices];
-    if (billedInr > 0) {
-      newInvoices.unshift({
-        id: `INV-${new Date().getFullYear()}-${String(newInvoices.length + 2).padStart(3, '0')}`,
-        issuedAt: Date.now(),
-        description: `${targetPlan.name} Plan — ${
-          billingCycle === 'annual' ? 'Annual (20% Off)' : 'Monthly'
-        } Subscription (Demo)`,
-        amountInr: billedInr,
-      });
+    if (planId === 'free') {
+      try {
+        await fetch('/api/billing/create-order', {
+          method: 'POST',
+          headers: getAuthorizedHeaders({ 'Content-Type': 'application/json' }),
+          credentials: 'include',
+          body: JSON.stringify({ planId: 'free', billingCycle }),
+        });
+      } catch {
+        // Continue local update if offline in tests
+      }
+
+      const nextSettings: WorkspaceSettings = {
+        ...settings,
+        subscription: {
+          ...settings.subscription,
+          planId: 'free',
+          billingCycle,
+          cancelledAt: null,
+        },
+      };
+      await vaultRepository.setMeta('settings', nextSettings);
+      vaultRepository.notifyBroadcast();
+      await get().refreshFromStorage();
+      return;
     }
 
-    const nextSettings: WorkspaceSettings = {
-      ...settings,
-      subscription: {
+    const rzpPlanIds = razorpayPlanIds || clientEnv.razorpayPlanIds;
+    const selectedRazorpayPlanId =
+      planId === 'pro'
+        ? billingCycle === 'annual'
+          ? rzpPlanIds.proAnnual
+          : rzpPlanIds.proMonthly
+        : billingCycle === 'annual'
+        ? rzpPlanIds.ultraAnnual
+        : rzpPlanIds.ultraMonthly;
+
+    // Paid plan (PRO or ULTRA): Request recurring Subscription (if Plan ID is set) or Order from backend
+    const orderRes = await fetch('/api/billing/create-order', {
+      method: 'POST',
+      headers: getAuthorizedHeaders({ 'Content-Type': 'application/json' }),
+      credentials: 'include',
+      body: JSON.stringify({
         planId,
         billingCycle,
-        cancelledAt: null,
-        invoices: newInvoices,
-      },
-    };
+        razorpayPlanId: selectedRazorpayPlanId || undefined,
+      }),
+    });
 
-    await vaultRepository.setMeta('settings', nextSettings);
-    vaultRepository.notifyBroadcast();
-    await get().refreshFromStorage();
+    if (!orderRes.ok) {
+      const errData = await orderRes.json().catch(() => ({}));
+      throw new Error(
+        errData.error ||
+          'Razorpay payment gateway is not configured on the server. Configure Razorpay in the Admin Dashboard to enable paid plan upgrades.'
+      );
+    }
+
+    const orderData = await orderRes.json();
+    const effectiveKeyId = orderData.keyId || get().razorpayKeyId || clientEnv.razorpayKeyId;
+
+    // Load Razorpay Checkout SDK dynamically if in browser
+    if (typeof window !== 'undefined') {
+      await new Promise<void>((resolve, reject) => {
+        const openCheckout = () => {
+          const RazorpayCtor = (window as unknown as { Razorpay?: any }).Razorpay;
+          if (!RazorpayCtor) {
+            reject(new Error('Failed to load Razorpay Checkout SDK.'));
+            return;
+          }
+
+          const isRecurringSubscription = Boolean(orderData.subscriptionId);
+          const checkoutOptions: Record<string, any> = {
+            key: effectiveKeyId,
+            name: 'MountYourClouds',
+            description: `${plans[planId].name} Plan (${billingCycle})`,
+            prefill: {
+              name: get().currentAccount?.displayName || '',
+              email: get().currentAccount?.email || '',
+            },
+            theme: { color: '#0071E3' },
+            handler: async (response: {
+              razorpay_order_id?: string;
+              razorpay_subscription_id?: string;
+              razorpay_payment_id: string;
+              razorpay_signature: string;
+            }) => {
+              try {
+                const verifyRes = await fetch('/api/billing/verify-payment', {
+                  method: 'POST',
+                  headers: getAuthorizedHeaders({ 'Content-Type': 'application/json' }),
+                  credentials: 'include',
+                  body: JSON.stringify({
+                    razorpay_order_id: response.razorpay_order_id || (!isRecurringSubscription ? orderData.orderId : undefined),
+                    razorpay_subscription_id:
+                      response.razorpay_subscription_id ||
+                      (isRecurringSubscription ? orderData.subscriptionId : undefined),
+                    razorpay_payment_id: response.razorpay_payment_id,
+                    razorpay_signature: response.razorpay_signature,
+                  }),
+                });
+                if (!verifyRes.ok) {
+                  const vErr = await verifyRes.json().catch(() => ({}));
+                  reject(new Error(vErr.error || 'Payment signature verification failed.'));
+                  return;
+                }
+                await get().fetchBillingStatus();
+                await get().refreshFromStorage();
+                resolve();
+              } catch (e) {
+                reject(e);
+              }
+            },
+            modal: {
+              ondismiss: () => {
+                reject(new Error('Checkout cancelled before payment completion.'));
+              },
+            },
+          };
+
+          if (isRecurringSubscription) {
+            checkoutOptions.subscription_id = orderData.subscriptionId;
+          } else {
+            checkoutOptions.order_id = orderData.orderId;
+            checkoutOptions.amount = orderData.amountPaise;
+            checkoutOptions.currency = orderData.currency || 'INR';
+          }
+
+          const rzp = new RazorpayCtor(checkoutOptions);
+          rzp.open();
+        };
+
+        if ((window as unknown as { Razorpay?: any }).Razorpay) {
+          openCheckout();
+        } else {
+          const existingScript = document.querySelector(
+            'script[src="https://checkout.razorpay.com/v1/checkout.js"]'
+          ) as HTMLScriptElement | null;
+          if (existingScript) {
+            existingScript.addEventListener('load', openCheckout, { once: true });
+            existingScript.addEventListener(
+              'error',
+              () => reject(new Error('Could not load Razorpay Checkout script.')),
+              { once: true }
+            );
+          } else {
+            const script = document.createElement('script');
+            script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+            script.async = true;
+            script.onload = openCheckout;
+            script.onerror = () => reject(new Error('Could not load Razorpay Checkout script.'));
+            document.body.appendChild(script);
+          }
+        }
+      });
+    }
   },
 
   cancelSubscription: async () => {
     const { mounts, settings } = get();
     const plans = getEffectivePlans(settings.customPlans);
     const freePlan = plans.free;
-    const externalMounts = Math.max(0, mounts.length - 1);
-
-    // If external mounts fit in FREE plan, switch straight to FREE; otherwise mark subscription as cancelled at period end and keep current mounts intact
+    const externalMounts = Math.max(0, mounts.filter((m) => m.kind !== 'local').length);
     const canImmediatelyDropToFree = externalMounts <= freePlan.maxMounts;
+
+    try {
+      await fetch('/api/billing/cancel', {
+        method: 'POST',
+        headers: getAuthorizedHeaders(),
+        credentials: 'include',
+      });
+    } catch {
+      // Continue
+    }
 
     const nextSettings: WorkspaceSettings = {
       ...settings,
@@ -711,21 +1196,6 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     await get().refreshFromStorage();
   },
 
-  updateTelegramWebhookSim: async (patch) => {
-    const cur = get().settings;
-    const currentSim = cur.telegramWebhookSim ?? DEFAULT_SETTINGS.telegramWebhookSim!;
-    const nextSettings: WorkspaceSettings = {
-      ...cur,
-      telegramWebhookSim: {
-        ...currentSim,
-        ...patch,
-      },
-    };
-    await vaultRepository.setMeta('settings', nextSettings);
-    vaultRepository.notifyBroadcast();
-    await get().refreshFromStorage();
-  },
-
   updateDeveloperSettings: async (dev) => {
     const cur = get().settings;
     const nextSettings: WorkspaceSettings = {
@@ -754,61 +1224,12 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     await get().refreshFromStorage();
   },
 
-  generateDemoToken: async (name) => {
-    const cleanName = name.trim() || 'CLI Token (Demo)';
-    const randBytes = new Uint8Array(12);
-    crypto.getRandomValues(randBytes);
-    const hex = Array.from(randBytes)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-    const prefix = `tv_demo_${hex.slice(0, 4)}`;
-    const tokenValue = `${prefix}_${hex.slice(4)}`;
-
-    const cur = get().settings;
-    const nextSettings: WorkspaceSettings = {
-      ...cur,
-      demoTokens: [
-        {
-          id: `tok-${crypto.randomUUID()}`,
-          name: cleanName,
-          prefix,
-          tokenValue,
-          createdAt: Date.now(),
-        },
-        ...cur.demoTokens,
-      ],
-    };
-    await vaultRepository.setMeta('settings', nextSettings);
-    vaultRepository.notifyBroadcast();
-    await get().refreshFromStorage();
-    return tokenValue;
-  },
-
-  revokeDemoToken: async (tokenId) => {
-    const cur = get().settings;
-    const nextSettings: WorkspaceSettings = {
-      ...cur,
-      demoTokens: cur.demoTokens.filter((t) => t.id !== tokenId),
-    };
-    await vaultRepository.setMeta('settings', nextSettings);
-    vaultRepository.notifyBroadcast();
-    await get().refreshFromStorage();
-  },
-
-  resetSampleWorkspace: async () => {
-    await storageOrchestrator.resetWorkspace();
-    set({
-      currentFolderId: null,
-      selectedNodeIds: [],
-      focusedNodeId: null,
-      previewFileId: null,
-    });
-    await get().refreshFromStorage();
-  },
-
   fetchConnectedAccounts: async () => {
     try {
-      const res = await fetch('/api/oauth/accounts');
+      const res = await fetch('/api/oauth/accounts', {
+        headers: getAuthorizedHeaders(),
+        credentials: 'include',
+      });
       if (res.ok) {
         const data = await res.json();
         set({ connectedAccounts: data.accounts || [] });
@@ -822,6 +1243,8 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     try {
       const res = await fetch(`/api/oauth/accounts/${encodeURIComponent(id)}/disconnect`, {
         method: 'POST',
+        headers: getAuthorizedHeaders(),
+        credentials: 'include',
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -846,6 +1269,8 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
     try {
       const res = await fetch(`/api/oauth/accounts/${encodeURIComponent(id)}/refresh`, {
         method: 'POST',
+        headers: getAuthorizedHeaders(),
+        credentials: 'include',
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -867,8 +1292,9 @@ export const useVaultStore = create<VaultStoreState>((set, get) => ({
   },
 }));
 
-// Selector helper: compute usedBytes per mount (including trashed files until permanently deleted, §2)
-export function computeMountUsedBytesMap(nodes: VaultNode[]): Map<string, { usedBytes: number; fileCount: number }> {
+export function computeMountUsedBytesMap(
+  nodes: VaultNode[]
+): Map<string, { usedBytes: number; fileCount: number }> {
   const map = new Map<string, { usedBytes: number; fileCount: number }>();
   for (const n of nodes) {
     if (n.type === 'file') {
@@ -881,7 +1307,6 @@ export function computeMountUsedBytesMap(nodes: VaultNode[]): Map<string, { used
   return map;
 }
 
-// Selector helper: build breadcrumb path for a folderId
 export function buildBreadcrumbChain(
   folderId: string | null,
   nodes: VaultNode[]
@@ -890,7 +1315,7 @@ export function buildBreadcrumbChain(
   if (!folderId) return chain;
 
   const map = new Map(nodes.map((n) => [n.id, n]));
-  const segments: { id: string; name: string }[] = [];
+  const segments: { id: string | null; name: string }[] = [];
   let curr = map.get(folderId);
   const visited = new Set<string>();
 

@@ -7,7 +7,9 @@ export interface OAuthProviderDefinition {
   userinfoUrl: string;
   defaultScopes: string[];
   clientIdEnv: string;
+  clientIdAliases: string[];
   clientSecretEnv: string;
+  clientSecretAliases: string[];
   usePkce: boolean;
   extraAuthParams?: Record<string, string>;
   extractProfile: (data: any) => { id: string; email?: string; displayName: string; avatarUrl?: string };
@@ -26,8 +28,18 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDefinition> = {
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/userinfo.profile',
     ],
-    clientIdEnv: 'GOOGLE_DRIVE_CLIENT_ID',
-    clientSecretEnv: 'GOOGLE_DRIVE_CLIENT_SECRET',
+    clientIdEnv: 'GOOGLE_CLIENT_ID',
+    clientIdAliases: [
+      'GOOGLE_CLIENT_ID',
+      'GOOGLE_DRIVE_CLIENT_ID',
+      'VITE_GOOGLE_CLIENT_ID',
+      'VITE_GOOGLE_DRIVE_CLIENT_ID',
+    ],
+    clientSecretEnv: 'GOOGLE_CLIENT_SECRET',
+    clientSecretAliases: [
+      'GOOGLE_CLIENT_SECRET',
+      'GOOGLE_DRIVE_CLIENT_SECRET',
+    ],
     usePkce: true,
     extraAuthParams: {
       access_type: 'offline',
@@ -49,8 +61,18 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDefinition> = {
     tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
     userinfoUrl: 'https://graph.microsoft.com/v1.0/me',
     defaultScopes: ['Files.ReadWrite', 'offline_access', 'User.Read'],
-    clientIdEnv: 'MICROSOFT_ONEDRIVE_CLIENT_ID',
-    clientSecretEnv: 'MICROSOFT_ONEDRIVE_CLIENT_SECRET',
+    clientIdEnv: 'ONEDRIVE_CLIENT_ID',
+    clientIdAliases: [
+      'ONEDRIVE_CLIENT_ID',
+      'MICROSOFT_ONEDRIVE_CLIENT_ID',
+      'VITE_ONEDRIVE_CLIENT_ID',
+      'VITE_MICROSOFT_ONEDRIVE_CLIENT_ID',
+    ],
+    clientSecretEnv: 'ONEDRIVE_CLIENT_SECRET',
+    clientSecretAliases: [
+      'ONEDRIVE_CLIENT_SECRET',
+      'MICROSOFT_ONEDRIVE_CLIENT_SECRET',
+    ],
     usePkce: true,
     extraAuthParams: {
       prompt: 'select_account',
@@ -76,7 +98,9 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDefinition> = {
       'account_info.read',
     ],
     clientIdEnv: 'DROPBOX_CLIENT_ID',
+    clientIdAliases: ['DROPBOX_CLIENT_ID', 'VITE_DROPBOX_CLIENT_ID'],
     clientSecretEnv: 'DROPBOX_CLIENT_SECRET',
+    clientSecretAliases: ['DROPBOX_CLIENT_SECRET'],
     usePkce: true,
     extraAuthParams: {
       token_access_type: 'offline',
@@ -98,7 +122,9 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDefinition> = {
     userinfoUrl: 'https://api.box.com/2.0/users/me',
     defaultScopes: ['root_readwrite'],
     clientIdEnv: 'BOX_CLIENT_ID',
+    clientIdAliases: ['BOX_CLIENT_ID', 'VITE_BOX_CLIENT_ID'],
     clientSecretEnv: 'BOX_CLIENT_SECRET',
+    clientSecretAliases: ['BOX_CLIENT_SECRET'],
     usePkce: true,
     extractProfile: (data) => ({
       id: data.id,
@@ -116,7 +142,9 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDefinition> = {
     userinfoUrl: 'https://api.pcloud.com/userinfo',
     defaultScopes: [],
     clientIdEnv: 'PCLOUD_CLIENT_ID',
+    clientIdAliases: ['PCLOUD_CLIENT_ID', 'VITE_PCLOUD_CLIENT_ID'],
     clientSecretEnv: 'PCLOUD_CLIENT_SECRET',
+    clientSecretAliases: ['PCLOUD_CLIENT_SECRET'],
     usePkce: false,
     extractProfile: (data) => ({
       id: String(data.userid),
@@ -128,4 +156,20 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDefinition> = {
 
 export function getOAuthProvider(providerId: string): OAuthProviderDefinition | null {
   return OAUTH_PROVIDERS[providerId] || null;
+}
+
+export function resolveProviderClientId(provider: OAuthProviderDefinition): string {
+  for (const key of provider.clientIdAliases) {
+    const val = process.env[key]?.trim();
+    if (val) return val;
+  }
+  return process.env[provider.clientIdEnv]?.trim() || '';
+}
+
+export function resolveProviderClientSecret(provider: OAuthProviderDefinition): string {
+  for (const key of provider.clientSecretAliases) {
+    const val = process.env[key]?.trim();
+    if (val) return val;
+  }
+  return process.env[provider.clientSecretEnv]?.trim() || '';
 }

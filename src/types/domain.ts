@@ -197,6 +197,7 @@ export interface ActivityEvent {
 }
 
 export interface Account {
+  id?: string;
   email: string;
   displayName: string;
   passwordHash: string;
@@ -272,11 +273,13 @@ export interface DeveloperSettings {
 }
 
 export type ExplorerViewMode = 'table' | 'grid';
+export type ThemePreference = 'light' | 'dark' | 'system';
 export type FileCategory = 'all' | 'images' | 'documents' | 'audio' | 'video' | 'code' | 'archives' | 'other';
 export type SortField = 'name' | 'provider' | 'size' | 'modified';
 export type SortDirection = 'asc' | 'desc';
 
 export interface WorkspaceSettings {
+  theme?: ThemePreference;
   explorerView: ExplorerViewMode;
   sortField: SortField;
   sortDirection: SortDirection;

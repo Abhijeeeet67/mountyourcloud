@@ -1,16 +1,34 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
+  color-scheme: light;
+  --bg-app: #F5F5F7;
+  --bg-workspace: #FBFBFD;
+  --bg-surface: #FFFFFF;
+  --border-hairline: #E5E5EA;
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --text-primary: #1D1D1F;
+  --text-muted: #6E6E73;
+  --accent-btn: #0071E3;
+  --accent-focus: #0071E3;
+  --status-ok: #10B981;
+  --status-warn: #F59E0B;
+  --status-err: #E11D48;
+}
+
+.dark {
   color-scheme: dark;
   --bg-app: #090A0F;
   --bg-workspace: #0E1017;
   --bg-surface: #131620;
   --border-hairline: #1E2230;
   --border-subtle: rgba(255, 255, 255, 0.07);
-  --text-primary: #F3F4F6;
-  --text-muted: #8A94A6;
-  --accent-btn: #4F46E5;
-  --accent-focus: #818CF8;
+  --text-primary: #F5F5F7;
+  --text-muted: #86868B;
+  --accent-btn: #0071E3;
+  --accent-focus: #2997FF;
   --status-ok: #10B981;
   --status-warn: #F59E0B;
   --status-err: #F43F5E;
@@ -21,15 +39,16 @@
   body {
     background-color: var(--bg-app);
     color: var(--text-primary);
-    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'DM Sans', 'Segoe UI', Roboto, sans-serif;
     font-size: 14px;
     line-height: 1.5;
     overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
   }
 
   h1, h2, h3, h4, h5, h6 {
-    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    letter-spacing: -0.02em;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'DM Sans', sans-serif;
+    letter-spacing: -0.022em;
     text-wrap: balance;
   }
 
@@ -43,7 +62,13 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Accessible 2px focus ring with 2px offset on interactive elements */
+.apple-card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: 1rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
@@ -58,10 +83,9 @@ textarea:focus-visible,
   outline-offset: 2px;
 }
 
-/* Motion budget: 150ms transform & opacity only; disabled under prefers-reduced-motion */
 .tv-transition {
-  transition-property: transform, opacity;
-  transition-duration: 150ms;
+  transition-property: transform, opacity, background-color, border-color, color;
+  transition-duration: 160ms;
   transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -76,7 +100,6 @@ textarea:focus-visible,
   }
 }
 
-/* Custom thin dark scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -85,9 +108,9 @@ textarea:focus-visible,
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1E2230;
+  background: rgba(134, 134, 139, 0.35);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #2D3348;
+  background: rgba(134, 134, 139, 0.6);
 }

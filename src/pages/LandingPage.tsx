@@ -1,255 +1,289 @@
 import {
   ArrowRight,
-  Command,
-  Database,
+  CheckCircle2,
+  Cloud,
   Folder,
   HardDrive,
   Keyboard,
   Layers,
+  Lock,
   Menu,
+  Moon,
+  ShieldCheck,
   Star,
-  TrendingDown,
+  Sun,
   UploadCloud,
   X,
 } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
+import { ProviderLogo } from '../components/icons/ProviderLogo';
 import { PricingEstimator } from '../components/pricing/PricingEstimator';
-import { APP_NAME, PROTOTYPE_BADGE_TEXT } from '../lib/constants';
+import { APP_NAME, APP_TAGLINE } from '../lib/constants';
+import { PublicFooter } from './PublicPages';
 import { useVaultStore } from '../store/useVaultStore';
-import type { BillingCycle } from '../types/domain';
+import type { BillingCycle, ProviderKind } from '../types/domain';
 
 export function LandingPage() {
-  const navigate = useNavigate();
-  const launchDemoWorkspace = useVaultStore((s) => s.launchDemoWorkspace);
   const currentAccount = useVaultStore((s) => s.currentAccount);
+  const theme = useVaultStore((s) => s.settings.theme);
+  const setTheme = useVaultStore((s) => s.setTheme);
   const [billingCycle, setBillingCycle] = useState<BillingCycle>('monthly');
-  const [launching, setLaunching] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const handleLaunchDemo = async () => {
-    setLaunching(true);
-    try {
-      if (!currentAccount) {
-        await launchDemoWorkspace();
-      }
-      navigate('/app/overview');
-    } finally {
-      setLaunching(false);
-    }
-  };
+  const isDark = theme === 'dark';
+
+  const featuredProviders: Array<{ kind: ProviderKind; label: string; mode: string }> = [
+    { kind: 'gdrive', label: 'Google Drive', mode: 'OAuth 2.0 PKCE' },
+    { kind: 'onedrive', label: 'Microsoft OneDrive', mode: 'OAuth 2.0 PKCE' },
+    { kind: 'dropbox', label: 'Dropbox', mode: 'OAuth 2.0 PKCE' },
+    { kind: 'box', label: 'Box Cloud', mode: 'OAuth 2.0' },
+    { kind: 'pcloud', label: 'pCloud', mode: 'OAuth 2.0' },
+    { kind: 's3', label: 'Amazon S3', mode: 'Direct Endpoint' },
+    { kind: 'r2', label: 'Cloudflare R2', mode: 'Zero-Egress S3' },
+    { kind: 'b2', label: 'Backblaze B2', mode: 'S3 Compatible' },
+    { kind: 'webdav', label: 'WebDAV / Nextcloud', mode: 'Direct WebDAV' },
+  ];
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#090A0F] text-[#F3F4F6]">
-      {/* Permanent Prototype Honesty Strip (§0) */}
-      <div className="bg-[#0E1017] border-b border-[#1E2230] px-4 py-1.5 text-center font-mono text-xs text-[#F3F4F6]">
-        <span className="inline-block w-2 h-2 rounded-full bg-[#818CF8] mr-2 align-middle" />
-        {PROTOTYPE_BADGE_TEXT}
-      </div>
-
-      {/* Sticky 3-Zone Top Bar (§2, §7) */}
-      <header className="sticky top-0 z-30 bg-[#090A0F]/90 backdrop-blur border-b border-[#1E2230]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
-          {/* Zone 1: Single text element wordmark */}
+    <div className="min-h-screen flex flex-col bg-[#F5F5F7] dark:bg-[#0B0C10] text-[#1D1D1F] dark:text-[#F5F5F7] tv-transition">
+      {/* Sticky Apple-Inspired Top Bar */}
+      <header className="sticky top-0 z-30 bg-white/85 dark:bg-[#15171E]/85 backdrop-blur-xl border-b border-black/[0.06] dark:border-white/[0.08]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-8">
           <Link
             to="/"
-            className="text-lg font-bold tracking-tight text-[#F3F4F6] whitespace-nowrap shrink-0"
+            className="flex items-center gap-2.5 text-lg font-semibold tracking-tight whitespace-nowrap shrink-0"
           >
-            {APP_NAME}
+            <div className="w-8 h-8 rounded-xl bg-[#0071E3] flex items-center justify-center text-white shadow-xs">
+              <Cloud className="w-4 h-4" />
+            </div>
+            <span>{APP_NAME}</span>
           </Link>
 
-          {/* Zone 2: 4 concise single-line nav links */}
-          <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-[#8A94A6]">
-            <a
-              href="#capabilities"
-              className="hover:text-[#F3F4F6] hover:underline whitespace-nowrap shrink-0"
-            >
-              Capabilities
-            </a>
-            <a
-              href="#how-it-works"
-              className="hover:text-[#F3F4F6] hover:underline whitespace-nowrap shrink-0"
-            >
-              Architecture
-            </a>
-            <a
-              href="#pricing"
-              className="hover:text-[#F3F4F6] hover:underline whitespace-nowrap shrink-0"
-            >
-              Pricing Estimator
-            </a>
-            <Link
-              to="/auth"
-              className="hover:text-[#F3F4F6] hover:underline whitespace-nowrap shrink-0"
-            >
-              Sign in
+          <nav className="hidden md:flex items-center gap-6 text-xs font-medium text-[#6E6E73] dark:text-[#86868B]">
+            <Link to="/features" className="hover:text-[#1D1D1F] dark:hover:text-white">
+              Features
+            </Link>
+            <Link to="/integrations" className="hover:text-[#1D1D1F] dark:hover:text-white">
+              Integrations
+            </Link>
+            <Link to="/how-it-works" className="hover:text-[#1D1D1F] dark:hover:text-white">
+              How It Works
+            </Link>
+            <Link to="/pricing" className="hover:text-[#1D1D1F] dark:hover:text-white">
+              Pricing
+            </Link>
+            <Link to="/security" className="hover:text-[#1D1D1F] dark:hover:text-white">
+              Security
             </Link>
           </nav>
 
-          {/* Zone 3: Primary Action + Mobile Hamburger */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               type="button"
-              disabled={launching}
-              onClick={handleLaunchDemo}
-              className="px-4 py-2 rounded-md bg-[#4F46E5] hover:bg-[#4338CA] text-white text-xs font-medium whitespace-nowrap shrink-0"
+              onClick={() => setTheme(isDark ? 'light' : 'dark')}
+              aria-label="Toggle Light or Dark mode"
+              className="p-2 rounded-xl bg-black/[0.04] dark:bg-white/[0.06] text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-white"
             >
-              {launching ? 'Launching…' : 'Launch demo workspace'}
+              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
+
+            {currentAccount ? (
+              <Link
+                to="/app/overview"
+                className="px-4 py-2 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold inline-flex items-center gap-1.5"
+              >
+                <span>Open Workspace</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            ) : (
+              <>
+                <Link
+                  to="/auth"
+                  className="hidden sm:inline-flex px-3.5 py-2 rounded-xl text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7] hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                >
+                  Sign In
+                </Link>
+                <Link
+                  to="/auth"
+                  className="px-4 py-2 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold shadow-xs"
+                >
+                  Get Started Free
+                </Link>
+              </>
+            )}
 
             <button
               type="button"
               onClick={() => setMobileMenuOpen((o) => !o)}
               aria-label={mobileMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
               aria-expanded={mobileMenuOpen}
-              className="md:hidden p-2 rounded-md text-[#8A94A6] hover:text-[#F3F4F6] hover:bg-[#131620] border border-[#1E2230]"
+              className="md:hidden p-2 rounded-xl text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-white border border-black/[0.08] dark:border-white/[0.1]"
             >
               {mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
             </button>
           </div>
         </div>
 
-        {/* Mobile Navigation Drawer */}
         {mobileMenuOpen && (
           <nav
             aria-label="Mobile navigation"
-            className="md:hidden border-t border-[#1E2230] bg-[#090A0F]/95 backdrop-blur px-4 py-3 space-y-2 text-sm font-medium"
+            className="md:hidden border-t border-black/[0.06] dark:border-white/[0.08] bg-white dark:bg-[#15171E] px-4 py-3 space-y-2 text-xs font-medium"
           >
-            <a
-              href="#capabilities"
+            <Link
+              to="/features"
               onClick={() => setMobileMenuOpen(false)}
-              className="block py-1.5 text-[#8A94A6] hover:text-[#F3F4F6]"
+              className="block py-1.5 text-[#6E6E73]"
             >
-              Capabilities
-            </a>
-            <a
-              href="#how-it-works"
+              Features
+            </Link>
+            <Link
+              to="/integrations"
               onClick={() => setMobileMenuOpen(false)}
-              className="block py-1.5 text-[#8A94A6] hover:text-[#F3F4F6]"
+              className="block py-1.5 text-[#6E6E73]"
             >
-              Architecture
-            </a>
-            <a
-              href="#pricing"
+              Integrations
+            </Link>
+            <Link
+              to="/pricing"
               onClick={() => setMobileMenuOpen(false)}
-              className="block py-1.5 text-[#8A94A6] hover:text-[#F3F4F6]"
+              className="block py-1.5 text-[#6E6E73]"
             >
-              Pricing Estimator
-            </a>
+              Pricing
+            </Link>
+            <Link
+              to="/security"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block py-1.5 text-[#6E6E73]"
+            >
+              Security
+            </Link>
             <Link
               to="/auth"
               onClick={() => setMobileMenuOpen(false)}
-              className="block py-1.5 text-[#8A94A6] hover:text-[#F3F4F6]"
+              className="block py-1.5 text-[#0071E3] font-semibold"
             >
-              Sign in
+              Sign In / Create Account
             </Link>
           </nav>
         )}
       </header>
 
       <main className="flex-1">
-        {/* Hero Section with Static Non-Interactive Explorer Preview (§7) */}
-        <section className="max-w-7xl mx-auto px-4 sm:px-6 pt-14 pb-16 space-y-10">
+        {/* Hero Section */}
+        <section className="max-w-7xl mx-auto px-4 sm:px-8 pt-14 pb-16 space-y-10">
           <div className="max-w-3xl space-y-5">
-            <p className="font-mono text-xs text-[#818CF8]">
-              KEYBOARD-FIRST MULTI-CLOUD FILE MANAGER PROTOTYPE
-            </p>
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#0071E3]/10 text-[#0071E3] dark:text-[#0A84FF] text-xs font-semibold">
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>{APP_TAGLINE} · AES-256-GCM Encrypted Cloud Vault</span>
+            </div>
+
             <h1
-              className="font-bold text-[#F3F4F6] tracking-tight leading-[1.12]"
-              style={{ fontSize: 'clamp(2.25rem, 4vw, 3.75rem)' }}
+              className="font-bold tracking-tight leading-[1.1]"
+              style={{ fontSize: 'clamp(2.25rem, 4.2vw, 3.75rem)' }}
             >
-              Organize virtual folders across simulated cloud buckets in one dark workspace.
+              Every cloud. One place.
             </h1>
-            <p className="text-[15px] text-[#8A94A6] leading-relaxed max-w-2xl">
-              {APP_NAME} unifies a real browser-native IndexedDB vault with simulated AWS S3, Cloudflare R2, Google Cloud Storage, and WebDAV mounts. Navigate with{' '}
-              <code className="font-mono text-[#F3F4F6]">J/K</code> and{' '}
-              <code className="font-mono text-[#F3F4F6]">⌘K</code>, test multipart uploads with pause and resume, and model zero-egress bandwidth costs.
+
+            <p className="text-[15px] text-[#6E6E73] dark:text-[#86868B] leading-relaxed max-w-2xl">
+              Connect Google Drive, Microsoft OneDrive, Dropbox, Box, pCloud, Amazon S3, Cloudflare
+              R2, Backblaze B2, and WebDAV in one high-speed workspace. Authenticate with Google or
+              Apple, navigate with <code className="font-mono">⌘K</code>, and orchestrate multipart
+              transfers with cryptographic verification.
             </p>
 
             <div className="flex flex-wrap items-center gap-3 pt-2">
-              <button
-                type="button"
-                disabled={launching}
-                onClick={handleLaunchDemo}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-[#4F46E5] hover:bg-[#4338CA] text-white text-sm font-medium whitespace-nowrap"
-              >
-                <span>Launch demo workspace</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
               <Link
-                to="/auth"
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-[#131620] hover:bg-[#1E2230] border border-[#1E2230] text-[#F3F4F6] text-sm font-medium whitespace-nowrap"
+                to={currentAccount ? '/app/overview' : '/auth'}
+                className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-sm font-semibold shadow-sm tv-transition"
               >
-                Sign in
+                <span>{currentAccount ? 'Go to Workspace' : 'Start Free Workspace'}</span>
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+              <Link
+                to="/integrations"
+                className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-white dark:bg-[#15171E] hover:bg-black/[0.04] border border-black/[0.08] dark:border-white/[0.1] text-sm font-medium tv-transition"
+              >
+                <span>Explore Cloud Integrations</span>
               </Link>
             </div>
           </div>
 
-          {/* Static, Non-Interactive Explorer Preview (§7) */}
+          {/* Provider Strip */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-9 gap-2.5">
+            {featuredProviders.map((p) => (
+              <div
+                key={p.kind}
+                className="apple-card p-3 flex flex-col items-center text-center gap-1.5"
+              >
+                <div className="w-8 h-8 rounded-lg bg-[#F5F5F7] dark:bg-[#0B0C10] flex items-center justify-center">
+                  <ProviderLogo kind={p.kind} className="w-4 h-4" />
+                </div>
+                <span className="text-xs font-semibold truncate w-full">{p.label}</span>
+                <span className="text-[10px] font-mono text-[#28CD41]">{p.mode}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Workspace Interface Preview */}
           <div
             aria-hidden="true"
-            className="rounded-lg bg-[#0E1017] border border-[#1E2230] overflow-hidden select-none pointer-events-none"
+            className="apple-card overflow-hidden select-none pointer-events-none"
           >
-            <div className="px-4 py-2.5 bg-[#090A0F] border-b border-[#1E2230] flex items-center justify-between text-xs text-[#8A94A6]">
+            <div className="px-4 py-2.5 bg-[#F5F5F7] dark:bg-[#0B0C10] border-b border-black/[0.06] dark:border-white/[0.08] flex items-center justify-between text-xs text-[#6E6E73]">
               <div className="flex items-center gap-2 font-mono">
-                <span className="text-[#F3F4F6] font-bold">{APP_NAME}</span>
+                <span className="text-[#1D1D1F] dark:text-[#F5F5F7] font-bold">{APP_NAME}</span>
                 <span>/</span>
                 <span>All Files</span>
                 <span>/</span>
-                <span className="text-[#818CF8]">Engineering</span>
+                <span className="text-[#0071E3]">Connected Clouds</span>
               </div>
               <span className="font-mono text-[11px]">
-                Static Interface Preview · 40px High-Density Table
+                40px High-Density Virtualized Explorer
               </span>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-[#1E2230]">
-              {/* Static Sidebar Preview */}
-              <div className="p-3 bg-[#090A0F] space-y-1 text-xs">
-                <div className="px-2.5 py-1.5 rounded bg-[#131620] text-[#818CF8] font-medium flex items-center gap-2">
+            <div className="grid grid-cols-1 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-black/[0.06] dark:divide-white/[0.08]">
+              <div className="p-3 space-y-1 text-xs">
+                <div className="px-2.5 py-1.5 rounded-lg bg-[#0071E3] text-white font-medium flex items-center gap-2">
                   <Folder className="w-3.5 h-3.5" />
                   <span>All Files</span>
                 </div>
-                <div className="px-2.5 py-1.5 text-[#8A94A6] flex items-center gap-2">
+                <div className="px-2.5 py-1.5 text-[#6E6E73] flex items-center gap-2">
                   <Star className="w-3.5 h-3.5" />
                   <span>Starred</span>
                 </div>
-                <div className="px-2.5 py-1.5 text-[#8A94A6] flex items-center gap-2">
+                <div className="px-2.5 py-1.5 text-[#6E6E73] flex items-center gap-2">
                   <HardDrive className="w-3.5 h-3.5" />
-                  <span>5 Mounts Connected</span>
+                  <span>Connected OAuth Drives</span>
                 </div>
               </div>
 
-              {/* Static Table Rows Preview */}
-              <div className="lg:col-span-3 divide-y divide-[#1E2230]/70 text-xs">
+              <div className="lg:col-span-3 divide-y divide-black/[0.06] dark:divide-white/[0.08] text-xs">
                 {[
                   {
-                    name: 'Releases',
-                    mount: 'Virtual folder',
+                    name: 'Production Backups',
+                    mount: 'Cloudflare R2 Edge',
                     size: '—',
-                    date: '2d ago',
-                    isFolder: true,
+                    date: 'Active',
                   },
                   {
-                    name: 'RFC-014-multipart-orchestrator.md',
-                    mount: 'AWS S3 Production · Simulated',
-                    size: '1.4 KB',
-                    date: '1d ago',
-                    isFolder: false,
+                    name: 'Q4-Architecture-Review.pdf',
+                    mount: 'Google Drive (OAuth 2.0)',
+                    size: '4.2 MB',
+                    date: 'Synced',
                   },
                   {
-                    name: 'mountyourclouds-desktop-universal-symbols.zip',
-                    mount: 'Cloudflare R2 Edge · Simulated',
-                    size: '6.8 GB',
-                    date: '4d ago',
-                    isFolder: false,
+                    name: 'Release-Assets-v4.tar.gz',
+                    mount: 'Amazon S3 Bucket',
+                    size: '1.8 GB',
+                    date: 'Verified SHA-256',
                   },
                   {
-                    name: 'WORKSPACE-README.md',
-                    mount: 'Local Browser Vault',
-                    size: '1.1 KB',
-                    date: '9h ago',
-                    isFolder: false,
+                    name: 'Team-Shared-Contracts.docx',
+                    mount: 'Microsoft OneDrive',
+                    size: '840 KB',
+                    date: 'Synced',
                   },
                 ].map((row) => (
                   <div
@@ -257,17 +291,15 @@ export function LandingPage() {
                     className="h-10 px-4 flex items-center justify-between gap-4"
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <Folder
-                        className={`w-3.5 h-3.5 ${
-                          row.isFolder ? 'text-[#818CF8]' : 'text-[#8A94A6]'
-                        }`}
-                      />
-                      <span className="font-medium text-[#F3F4F6] truncate">{row.name}</span>
+                      <Folder className="w-3.5 h-3.5 text-[#0071E3]" />
+                      <span className="font-medium truncate">{row.name}</span>
                     </div>
-                    <div className="flex items-center gap-6 font-mono text-[#8A94A6] tabular-nums shrink-0">
+                    <div className="flex items-center gap-6 font-mono text-[#6E6E73] tabular-nums shrink-0">
                       <span className="hidden sm:inline">{row.mount}</span>
                       <span className="w-16 text-right">{row.size}</span>
-                      <span className="hidden md:inline w-16 text-right">{row.date}</span>
+                      <span className="hidden md:inline w-24 text-right text-[#28CD41]">
+                        {row.date}
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -276,154 +308,71 @@ export function LandingPage() {
           </div>
         </section>
 
-        {/* Six-Card Bento Grid (§7) */}
-        <section id="capabilities" className="max-w-7xl mx-auto px-4 sm:px-6 py-14 space-y-8 border-t border-[#1E2230]">
+        {/* Core Capabilities Bento Grid */}
+        <section className="max-w-7xl mx-auto px-4 sm:px-8 py-14 space-y-8 border-t border-black/[0.06] dark:border-white/[0.08]">
           <div className="max-w-2xl space-y-2">
-            <h2 className="text-2xl font-bold text-[#F3F4F6]">
-              01. Six Core Workspace Capabilities
-            </h2>
-            <p className="text-sm text-[#8A94A6]">
-              Built for speed, keyboard ergonomics, and transparent multi-mount storage modeling.
+            <h2 className="text-2xl font-bold">Built for Multi-Cloud Precision</h2>
+            <p className="text-sm text-[#6E6E73] dark:text-[#86868B]">
+              Real OAuth 2.0 PKCE connections, AES-256-GCM token encryption, and keyboard-first file
+              management.
             </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="md:col-span-2 rounded-lg bg-[#131620] border border-[#1E2230] p-6 space-y-2">
-              <div className="flex items-center gap-2 text-[#818CF8] text-xs font-mono">
+            <div className="apple-card p-6 space-y-2">
+              <div className="flex items-center gap-2 text-[#0071E3] text-xs font-mono font-semibold">
                 <Layers className="w-4 h-4" />
-                <span>01 · DUAL-MODE VIRTUALIZED EXPLORER</span>
+                <span>UNIFIED EXPLORER</span>
               </div>
-              <h3 className="text-lg font-bold text-[#F3F4F6]">
-                Linear 40px High-Density Table & Google Drive Visual Grid
+              <h3 className="text-base font-bold">
+                High-Density Table & Visual Grid
               </h3>
-              <p className="text-sm text-[#8A94A6] leading-relaxed">
-                Switch effortlessly between a virtualized 40px row table with column sorting and a thumbnail card grid. Virtual folders can hold files across any mount without moving underlying bytes.
+              <p className="text-xs text-[#6E6E73] dark:text-[#86868B] leading-relaxed">
+                Browse files across Google Drive, OneDrive, Dropbox, Box, pCloud, S3, R2, and
+                WebDAV with instant sorting, filtering, and previewing.
               </p>
             </div>
 
-            <div className="rounded-lg bg-[#131620] border border-[#1E2230] p-6 space-y-2">
-              <div className="flex items-center gap-2 text-[#818CF8] text-xs font-mono">
+            <div className="apple-card p-6 space-y-2">
+              <div className="flex items-center gap-2 text-[#28CD41] text-xs font-mono font-semibold">
+                <Lock className="w-4 h-4" />
+                <span>ZERO-LEAK SECURITY</span>
+              </div>
+              <h3 className="text-base font-bold">
+                AES-256-GCM Encrypted Token Vault
+              </h3>
+              <p className="text-xs text-[#6E6E73] dark:text-[#86868B] leading-relaxed">
+                OAuth refresh tokens and payment gateway secrets are encrypted server-side with
+                unique 96-bit IVs and strict user-scoped authorization checks.
+              </p>
+            </div>
+
+            <div className="apple-card p-6 space-y-2">
+              <div className="flex items-center gap-2 text-[#0071E3] text-xs font-mono font-semibold">
                 <UploadCloud className="w-4 h-4" />
-                <span>02 · MULTIPART ENGINE</span>
+                <span>MULTIPART ORCHESTRATOR</span>
               </div>
-              <h3 className="text-lg font-bold text-[#F3F4F6]">
-                Pause, Resume & Backoff Retry
+              <h3 className="text-base font-bold">
+                Pause, Resume & SHA-256 Checksums
               </h3>
-              <p className="text-sm text-[#8A94A6] leading-relaxed">
-                3-job concurrent upload queue with 100ms progress ticks, 3-second sliding window speed, SHA-256 verification, and 320px PNG thumbnail generation.
+              <p className="text-xs text-[#6E6E73] dark:text-[#86868B] leading-relaxed">
+                Concurrent multipart uploads with sliding-window speed telemetry, exponential
+                backoff retry, and scheduled cross-cloud replication.
               </p>
-            </div>
-
-            <div className="rounded-lg bg-[#131620] border border-[#1E2230] p-6 space-y-2">
-              <div className="flex items-center gap-2 text-[#818CF8] text-xs font-mono">
-                <Keyboard className="w-4 h-4" />
-                <span>03 · KEYBOARD-FIRST</span>
-              </div>
-              <h3 className="text-lg font-bold text-[#F3F4F6]">
-                Full Shortcut & Roving Tabindex Navigation
-              </h3>
-              <p className="text-sm text-[#8A94A6] leading-relaxed">
-                Navigate rows with J/K or arrows, preview with Space, rename with F2, star with S, or press ⌘K to jump to any file, mount, or action.
-              </p>
-            </div>
-
-            <div className="rounded-lg bg-[#131620] border border-[#1E2230] p-6 space-y-2">
-              <div className="flex items-center gap-2 text-[#818CF8] text-xs font-mono">
-                <Database className="w-4 h-4" />
-                <span>04 · INDEXEDDB PERSISTENCE</span>
-              </div>
-              <h3 className="text-lg font-bold text-[#F3F4F6]">
-                Real Browser Blobs & Cross-Tab Sync
-              </h3>
-              <p className="text-sm text-[#8A94A6] leading-relaxed">
-                Stores real binary Blobs in IndexedDB outside node metadata records so directory traversal stays fast, synced across open tabs via BroadcastChannel.
-              </p>
-            </div>
-
-            <div className="rounded-lg bg-[#131620] border border-[#1E2230] p-6 space-y-2">
-              <div className="flex items-center gap-2 text-[#10B981] text-xs font-mono">
-                <TrendingDown className="w-4 h-4" />
-                <span>05 · ZERO-EGRESS ANALYTICS</span>
-              </div>
-              <h3 className="text-lg font-bold text-[#F3F4F6]">
-                Bandwidth Trends & Egress Cost Modeling
-              </h3>
-              <p className="text-sm text-[#8A94A6] leading-relaxed">
-                Compare capacity across file categories and mounts, inspect 7D/30D ingress and egress charts, and quantify savings from zero-egress R2 mounts.
-              </p>
-            </div>
-
-            <div className="md:col-span-3 rounded-lg bg-[#131620] border border-[#1E2230] p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-[#818CF8] text-xs font-mono">
-                  <Command className="w-4 h-4" />
-                  <span>06 · DEVELOPER FAULT INJECTION</span>
-                </div>
-                <h3 className="text-lg font-bold text-[#F3F4F6]">
-                  Built-In Latency Jitter, Failure Rates (0 / 10 / 50%) & Offline Toggle
-                </h3>
-                <p className="text-sm text-[#8A94A6]">
-                  Verify error recovery, exponential backoff, and disconnected mount states directly from the Settings Developer Panel.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={handleLaunchDemo}
-                className="px-4 py-2 rounded-md bg-[#4F46E5] hover:bg-[#4338CA] text-white text-xs font-medium shrink-0 self-start md:self-auto"
-              >
-                Try in Demo Workspace
-              </button>
             </div>
           </div>
         </section>
 
-        {/* "How It Works" Adapter-Layer Diagram with Prototype Note (§7) */}
-        <section id="how-it-works" className="max-w-7xl mx-auto px-4 sm:px-6 py-14 space-y-6 border-t border-[#1E2230]">
+        {/* Pricing Section */}
+        <section
+          id="pricing"
+          className="max-w-7xl mx-auto px-4 sm:px-8 py-14 space-y-6 border-t border-black/[0.06] dark:border-white/[0.08]"
+        >
           <div className="max-w-2xl space-y-2">
-            <h2 className="text-2xl font-bold text-[#F3F4F6]">
-              02. How It Works — Pluggable Adapter Layer
-            </h2>
-            <p className="text-sm text-[#8A94A6]">
-              The UI never imports an adapter directly. Every operation routes through{' '}
-              <code className="font-mono text-[#F3F4F6]">StorageOrchestrator</code>, which pairs virtual folder metadata with S3-style multipart provider adapters.
-            </p>
-          </div>
-
-          <div className="rounded-lg bg-[#131620] border border-[#1E2230] p-6 space-y-4">
-            <pre className="font-mono text-xs text-[#F3F4F6] overflow-x-auto leading-relaxed">
-{`┌───────────────────────────────────────────────────────────────────────────┐
-│  MountYourClouds React UI (Explorer · Transfer Tray · Overview · ⌘K)      │
-└─────────────────────────────────────┬─────────────────────────────────────┘
-                                      ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│  StorageOrchestrator                                                      │
-│  • Virtual folder tree & collision-safe sibling naming                    │
-│  • 3-concurrent multipart upload queue + 3s sliding window speed          │
-│  • SHA-256 WebCrypto digest (≤ 64 MB) & 320px PNG canvas thumbnails       │
-└───────────────┬───────────────────────────────────────────┬───────────────┘
-                ▼                                           ▼
-┌─────────────────────────────────────┐   ┌─────────────────────────────────┐
-│  IndexedDBStorageAdapter (Real)     │   │  SimulatedCloudAdapter (Local)  │
-│  • local-vault (1 MiB parts)        │   │  • s3-prod     (8 MiB · ~80ms)  │
-│  • Persists Blobs in                │   │  • r2-edge     (8 MiB · ~60ms)  │
-│    mountyourclouds_db               │   │  • gcs-archive (8 MiB · ~100ms) │
-│                                     │   │  • webdav-nas  (4 MiB · ~140ms) │
-└─────────────────────────────────────┘   └─────────────────────────────────┘`}
-            </pre>
-            <p className="text-xs text-[#8A94A6] border-t border-[#1E2230] pt-3 font-mono">
-              Prototype note: Simulated adapters do not contact external cloud servers; on multipart completion, they commit the uploaded Blob into the local browser’s <code className="text-[#F3F4F6]">mountyourclouds_db</code> IndexedDB store.
-            </p>
-          </div>
-        </section>
-
-        {/* Pricing Estimator Section (§7, §8) */}
-        <section id="pricing" className="max-w-7xl mx-auto px-4 sm:px-6 py-14 space-y-6 border-t border-[#1E2230]">
-          <div className="max-w-2xl space-y-2">
-            <h2 className="text-2xl font-bold text-[#F3F4F6]">
-              03. Illustrative Pricing & Cost Estimator
-            </h2>
-            <p className="text-sm text-[#8A94A6]">
-              Use the sliders below to estimate monthly storage and egress costs across plans.
+            <h2 className="text-2xl font-bold">Simple, Transparent INR Pricing</h2>
+            <p className="text-sm text-[#6E6E73] dark:text-[#86868B]">
+              Start on the FREE plan (₹0/month for up to 2 cloud accounts), or upgrade to PRO and
+              ULTRA with Razorpay.
             </p>
           </div>
 
@@ -435,28 +384,7 @@ export function LandingPage() {
         </section>
       </main>
 
-      {/* Quiet Footer (§7) */}
-      <footer className="border-t border-[#1E2230] bg-[#090A0F] py-8 px-4 sm:px-6">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#8A94A6]">
-          <div className="flex items-center gap-3">
-            <span className="font-bold text-[#F3F4F6]">{APP_NAME}</span>
-            <span>·</span>
-            <span>{PROTOTYPE_BADGE_TEXT}</span>
-          </div>
-          <div className="flex items-center gap-5">
-            <Link to="/auth" className="hover:text-[#F3F4F6]">
-              Sign in
-            </Link>
-            <button
-              type="button"
-              onClick={handleLaunchDemo}
-              className="text-[#818CF8] hover:underline"
-            >
-              Launch Demo Workspace
-            </button>
-          </div>
-        </div>
-      </footer>
+      <PublicFooter />
     </div>
   );
 }

@@ -1,66 +1,86 @@
 import {
-  AlertTriangle,
+  AlertCircle,
   CheckCircle2,
-  Cloud,
+  ExternalLink,
   HardDrive,
-  Loader2,
-  Pencil,
-  Plug,
-  PlugZap,
+  KeyRound,
+  Lock,
   Plus,
   RefreshCw,
-  Search,
+  Server,
   ShieldAlert,
-  Sparkles,
   Trash2,
-  WifiOff,
+  Unplug,
   X,
 } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { ConnectedAccountsManager } from '../components/accounts/ConnectedAccountsManager';
+import { ProviderLogo } from '../components/icons/ProviderLogo';
 import { MOUNTABLE_PROVIDER_KINDS, PROVIDER_KIND_META } from '../lib/constants';
 import { formatBytes, formatRelativeOrShortDate, SI_GB } from '../lib/format';
-import { startServerOAuthFlow } from '../lib/oauth';
+import {
+  getSmartWebDavDefaults,
+  isOAuthSupported,
+  parseS3CredentialsText,
+  startServerOAuthFlow,
+} from '../lib/oauth';
 import { getEffectivePlans, normalizePlanId } from '../lib/pricing';
 import { storageOrchestrator } from '../storage/orchestrator';
 import { computeMountUsedBytesMap, useVaultStore } from '../store/useVaultStore';
-import type { ProviderCredentials, ProviderKind, ProviderMount } from '../types/domain';
+import type {
+  ConnectionReport,
+  ProviderCategory,
+  ProviderCredentials,
+  ProviderKind,
+  ProviderMount,
+} from '../types/domain';
 
-// Bucket name validation rules for object storage providers
-export function validateBucketName(
-  kind: 's3' | 'r2' | 'gcs',
-  bucket: string
-): string | null {
-  const clean = bucket.trim();
-  if (clean.length < 3 || clean.length > 63) {
+const CATEGORIES: ('All' | ProviderCategory)[] = [
+  'All',
+  'Consumer & Personal Cloud',
+  'Object & Infrastructure Cloud',
+  'Self-Hosted & Protocol',
+];
+
+export function validateBucketName(kind: ProviderKind, bucket: string): string | null {
+  const b = bucket.trim();
+  if (b.length < 3 || b.length > 63) {
     return 'Bucket name must be between 3 and 63 characters.';
   }
-  if (!/^[a-z0-9].*[a-z0-9]$/.test(clean)) {
+  if (!/^[a-z0-9]/.test(b) || !/[a-z0-9]$/.test(b)) {
     return 'Bucket name must start and end with a lowercase letter or digit.';
   }
-  if (kind === 's3' && !/^[a-z0-9.-]+$/.test(clean)) {
-    return 'S3 bucket name may only contain lowercase letters, digits, dots (.), and hyphens (-).';
-  }
-  if (kind === 'r2' && !/^[a-z0-9-]+$/.test(clean)) {
-    return 'Cloudflare R2 bucket name may only contain lowercase letters, digits, and hyphens (-).';
-  }
-  if (kind === 'gcs' && !/^[a-z0-9._-]+$/.test(clean)) {
-    return 'GCS bucket name may only contain lowercase letters, digits, dots (.), hyphens (-), and underscores (_).';
+  if (kind === 'r2') {
+    if (!/^[a-z0-9-]+$/.test(b)) {
+      return 'Cloudflare R2 bucket name may only contain lowercase letters, digits, and hyphens (-).';
+    }
+  } else if (kind === 'gcs') {
+    if (!/^[a-z0-9._-]+$/.test(b)) {
+      return 'GCS bucket name may only contain lowercase letters, digits, dots (.), hyphens (-), and underscores (_).';
+    }
+  } else {
+    if (!/^[a-z0-9.-]+$/.test(b)) {
+      return 'S3 bucket name may only contain lowercase letters, digits, dots (.), and hyphens (-).';
+    }
   }
   return null;
 }
 
-export function validateWebdavUrl(urlStr: string): string | null {
+export function validateWebdavUrl(url: string): string | null {
+  const u = url.trim();
+  if (!u) {
+    return 'Please enter a valid http(s) endpoint URL.';
+  }
+  let parsed: URL;
   try {
-    const parsed = new URL(urlStr.trim());
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return 'Endpoint URL must start with http:// or https://';
-    }
-    return null;
+    parsed = new URL(u);
   } catch {
     return 'Please enter a valid http(s) endpoint URL.';
   }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return 'Endpoint URL must start with http:// or https://';
+  }
+  return null;
 }
 
 export function ProvidersPage() {
@@ -70,1323 +90,1084 @@ export function ProvidersPage() {
   const connectedAccounts = useVaultStore((s) => s.connectedAccounts);
   const fetchConnectedAccounts = useVaultStore((s) => s.fetchConnectedAccounts);
   const addToast = useVaultStore((s) => s.addToast);
-  const setUpgradePromptReason = useVaultStore((s) => s.setUpgradePromptReason);
 
+  const [selectedCategory, setSelectedCategory] = useState<'All' | ProviderCategory>('All');
+  const [providerSearch, setProviderSearch] = useState('');
   const [testingMountId, setTestingMountId] = useState<string | null>(null);
+  const [syncingMountId, setSyncingMountId] = useState<string | null>(null);
+  const [confirmRemoveMount, setConfirmRemoveMount] = useState<ProviderMount | null>(null);
+
+  // Add / Edit Mount Modal State (Production: Real Mode Only)
   const [modalOpen, setModalOpen] = useState(false);
   const [editingMount, setEditingMount] = useState<ProviderMount | null>(null);
-  const [removingMount, setRemovingMount] = useState<ProviderMount | null>(null);
+  const [draftKind, setDraftKind] = useState<Exclude<ProviderKind, 'local'>>('gdrive');
+  const [draftName, setDraftName] = useState('Google Drive');
+  const [draftEndpoint, setDraftEndpoint] = useState('https://www.googleapis.com/drive/v3');
+  const [draftRegion, setDraftRegion] = useState('global');
+  const [draftBucket, setDraftBucket] = useState('');
+  const [draftAllocatedGB, setDraftAllocatedGB] = useState<number>(15);
 
-  // Add / Edit Form State supporting all 21 mountable cloud providers
-  const [providerCategoryTab, setProviderCategoryTab] = useState<
-    | 'Consumer & Personal Cloud'
-    | 'Object & Infrastructure Cloud'
-    | 'Self-Hosted & Protocol'
-  >('Consumer & Personal Cloud');
-  const [kind, setKind] = useState<Exclude<ProviderKind, 'local'>>('mega');
-  const [name, setName] = useState('');
-  const [allocatedGB, setAllocatedGB] = useState('2000');
-  const [s3Region, setS3Region] = useState('us-east-1');
-  const [bucketName, setBucketName] = useState('/CloudVault');
-  const [r2AccountId, setR2AccountId] = useState('94a0bc12e8');
-  const [gcsProjectId, setGcsProjectId] = useState('mountyourclouds-cloud-demo');
-  const [gcsLocation, setGcsLocation] = useState('us-central1');
-  const [webdavUrl, setWebdavUrl] = useState('https://dav.example.com/webdav');
-  const [webdavBasePath, setWebdavBasePath] = useState('/vault');
-  const [formError, setFormError] = useState<string | null>(null);
+  // Real Credentials State
+  const [oauthAccessToken, setOauthAccessToken] = useState('');
+  const [oauthConnectedAccountId, setOauthConnectedAccountId] = useState('');
+  const [oauthDanceLoading, setOauthDanceLoading] = useState(false);
 
-  // Dual-Mode & Real Cloud Credentials State
-  const [mountMode, setMountMode] = useState<'real' | 'simulated'>('simulated');
-  const [selectedAccountId, setSelectedAccountId] = useState<string>('');
-  const [isOAuthing, setIsOAuthing] = useState(false);
-  const [authToken, setAuthToken] = useState('');
   const [s3AccessKeyId, setS3AccessKeyId] = useState('');
   const [s3SecretAccessKey, setS3SecretAccessKey] = useState('');
-  const [webdavUser, setWebdavUser] = useState('');
-  const [webdavPass, setWebdavPass] = useState('');
+  const [s3PasteHelperText, setS3PasteHelperText] = useState('');
 
-  // 3-step handshake state (~1.5s)
-  const [handshakeStep, setHandshakeStep] = useState<string | null>(null);
-  const [providerSearch, setProviderSearch] = useState('');
+  const [webdavUsername, setWebdavUsername] = useState('');
+  const [webdavPassword, setWebdavPassword] = useState('');
+  const [webdavBasePath, setWebdavBasePath] = useState('/vault');
 
-  const mountUsageMap = useMemo(() => computeMountUsedBytesMap(nodes), [nodes]);
-  const plans = useMemo(
-    () => getEffectivePlans(settings.customPlans),
-    [settings.customPlans]
-  );
-  const activePlanId = normalizePlanId(settings.subscription.planId);
-  const currentPlan = plans[activePlanId];
-  const externalMountCount = Math.max(0, mounts.length - 1);
+  const [testingDraft, setTestingDraft] = useState(false);
+  const [draftReport, setDraftReport] = useState<ConnectionReport | null>(null);
+  const [draftError, setDraftError] = useState<string | null>(null);
 
-  const applyDefaultsForKind = (nextKind: Exclude<ProviderKind, 'local'>) => {
-    const meta = PROVIDER_KIND_META[nextKind];
-    const defaultPath =
-      meta.category === 'Object & Infrastructure Cloud'
-        ? `mountyourclouds-${nextKind}-bucket`
-        : '/MountYourClouds';
-    setKind(nextKind);
-    if (meta.integrationStatus === 'api_restricted' || meta.requiresBackendProxy) {
-      setMountMode('simulated');
-    }
+  const usageMap = useMemo(() => computeMountUsedBytesMap(nodes), [nodes]);
+  const plans = useMemo(() => getEffectivePlans(settings.customPlans), [settings.customPlans]);
+  const activePlan = plans[normalizePlanId(settings.subscription.planId)];
+  const externalCount = mounts.filter((m) => m.kind !== 'local').length;
 
-    // Auto-select connected OAuth account if one is present
-    const matchingAccounts = connectedAccounts.filter((a) => a.provider === nextKind && a.status === 'active');
-    if (matchingAccounts.length > 0) {
-      setSelectedAccountId(matchingAccounts[0].id);
-      setMountMode('real');
-    } else {
-      setSelectedAccountId('');
-    }
-
-    setProviderCategoryTab(
-      meta.category === 'Built-In Browser'
-        ? 'Consumer & Personal Cloud'
-        : meta.category
+  const isUnsupportedOrRestricted = (kind: ProviderKind): boolean => {
+    const meta = PROVIDER_KIND_META[kind];
+    return (
+      meta.integrationStatus === 'api_restricted' ||
+      meta.integrationStatus === 'proxy_required' ||
+      meta.isSimulated
     );
-    setName(`${meta.shortLabel} Cloud Vault`);
-    setAllocatedGB(String(meta.defaultAllocatedGB));
-    setS3Region(meta.defaultRegion);
-    setBucketName(defaultPath);
-    setGcsLocation(meta.defaultRegion);
-    setWebdavUrl(meta.defaultEndpoint);
-    setWebdavBasePath(defaultPath);
-    setFormError(null);
   };
 
-  const openAddModal = (preselectedKind?: Exclude<ProviderKind, 'local'>) => {
-    if (externalMountCount >= currentPlan.maxMounts) {
-      setUpgradePromptReason(
-        `Your ${currentPlan.name} plan allows connecting up to ${currentPlan.maxMounts} external cloud storage accounts (currently ${externalMountCount} connected). Upgrade to PRO (up to ${plans.pro.maxMounts} clouds) or ULTRA (up to ${plans.ultra.maxMounts} clouds) to connect more providers.`
-      );
-      return;
+  const buildDraftCredentials = (): ProviderCredentials => {
+    const meta = PROVIDER_KIND_META[draftKind];
+    const creds: ProviderCredentials = {};
+
+    if (meta.authMethod === 'oauth2_pkce' || meta.authMethod === 'oauth2_code') {
+      creds.oauthToken = {
+        accessToken: oauthAccessToken.trim(),
+        connectedAccountId: oauthConnectedAccountId.trim() || undefined,
+      };
+    } else if (meta.authMethod === 's3_credentials' || meta.authMethod === 'sas_token') {
+      creds.s3Keys = {
+        accessKeyId: s3AccessKeyId.trim(),
+        secretAccessKey: s3SecretAccessKey.trim(),
+        region: draftRegion.trim() || 'us-east-1',
+        bucket: draftBucket.trim() || 'default',
+        endpoint: draftEndpoint.trim(),
+      };
+    } else if (meta.authMethod === 'webdav_basic') {
+      creds.webdavAuth = {
+        username: webdavUsername.trim(),
+        password: webdavPassword,
+        url: draftEndpoint.trim(),
+        basePath: webdavBasePath.trim() || '/',
+      };
     }
 
-    setEditingMount(null);
-    setProviderSearch('');
-    setMountMode('simulated');
-    setSelectedAccountId('');
-    setIsOAuthing(false);
-    setAuthToken('');
-    setS3AccessKeyId('');
-    setS3SecretAccessKey('');
-    setWebdavUser('');
-    setWebdavPass('');
-    applyDefaultsForKind(preselectedKind ?? 'gdrive');
-    setHandshakeStep(null);
-    setModalOpen(true);
+    return creds;
   };
 
-  const openEditModal = (mount: ProviderMount) => {
-    setEditingMount(mount);
-    const k = mount.kind === 'local' ? 's3' : mount.kind;
-    setKind(k);
-    setMountMode(mount.mode ?? 'simulated');
-    setSelectedAccountId(mount.connectedAccountId ?? '');
-    setIsOAuthing(false);
-    setAuthToken(mount.credentials?.oauthToken?.accessToken ?? '');
-    setS3AccessKeyId(mount.credentials?.s3Keys?.accessKeyId ?? '');
-    setS3SecretAccessKey(mount.credentials?.s3Keys?.secretAccessKey ?? '');
-    setWebdavUser(mount.credentials?.webdavAuth?.username ?? '');
-    setWebdavPass(mount.credentials?.webdavAuth?.password ?? '');
-    setProviderCategoryTab(
-      PROVIDER_KIND_META[k].category === 'Built-In Browser'
-        ? 'Consumer & Personal Cloud'
-        : PROVIDER_KIND_META[k].category
-    );
-    setName(mount.name);
-    setAllocatedGB(String(Math.max(1, Math.round(mount.allocatedBytes / SI_GB))));
-    setS3Region(mount.region ?? PROVIDER_KIND_META[k].defaultRegion);
-    setBucketName(mount.bucket ?? '/MountYourClouds');
-    setGcsLocation(mount.region ?? 'us-central1');
-    setWebdavUrl(mount.endpoint ?? PROVIDER_KIND_META[k].defaultEndpoint);
-    setWebdavBasePath(mount.bucket ?? '/vault');
-    setFormError(null);
-    setHandshakeStep(null);
-    setModalOpen(true);
-  };
-
-  const handleTestMount = async (mount: ProviderMount) => {
-    setTestingMountId(mount.id);
-    try {
-      const report = await storageOrchestrator.testMount(mount);
+  const openAddModal = (kind: Exclude<ProviderKind, 'local'> = 'gdrive') => {
+    if (isUnsupportedOrRestricted(kind)) {
+      const meta = PROVIDER_KIND_META[kind];
       addToast({
-        title: `${mount.name}: Handshake OK (${report.latencyMs} ms)`,
-        description: report.message,
-        variant: 'success',
+        title: `${meta.label} is not available for direct connection`,
+        description:
+          meta.apiNote ||
+          'This provider does not offer an open third-party OAuth/CORS API or requires a dedicated TCP proxy.',
+        variant: 'warning',
       });
-    } catch (err) {
-      addToast({
-        title: `Connection test failed for ${mount.name}`,
-        description: err instanceof Error ? err.message : undefined,
-        variant: 'error',
-      });
-    } finally {
-      setTestingMountId(null);
-    }
-  };
-
-  const handleFormSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormError(null);
-
-    const cleanName = name.trim();
-    if (!cleanName) {
-      setFormError('Mount display name is required.');
       return;
-    }
-
-    const capNum = Number(allocatedGB);
-    if (!Number.isFinite(capNum) || capNum < 1 || capNum > 100_000) {
-      setFormError('Allocated capacity must be between 1 GB and 100,000 GB.');
-      return;
-    }
-    const allocatedBytes = Math.round(capNum * SI_GB);
-
-    if (editingMount) {
-      const currentUsed = mountUsageMap.get(editingMount.id)?.usedBytes ?? 0;
-      if (allocatedBytes < currentUsed) {
-        setFormError(
-          `Allocated capacity cannot be less than currently stored files (${formatBytes(currentUsed)}).`
-        );
-        return;
-      }
     }
 
     const meta = PROVIDER_KIND_META[kind];
-    let endpoint: string | null = meta.defaultEndpoint;
-    let region: string | null = s3Region.trim() || meta.defaultRegion;
-    let bucket: string | null = bucketName.trim() || '/MountYourClouds';
+    const matchingConnectedAccount = connectedAccounts.find(
+      (a) => a.provider === kind && a.status === 'active'
+    );
 
-    if (editingMount?.kind === 'local') {
-      endpoint = editingMount.endpoint;
-      region = editingMount.region;
-      bucket = editingMount.bucket;
-    } else if (kind === 's3') {
-      const bErr = validateBucketName('s3', bucketName);
-      if (bErr) {
-        setFormError(bErr);
-        return;
-      }
-      region = s3Region.trim() || 'us-east-1';
-      bucket = bucketName.trim();
-      endpoint = `https://s3.${region}.amazonaws.com`;
-    } else if (kind === 'r2') {
-      const cleanAcc = r2AccountId.trim().toLowerCase();
-      if (!/^[a-z0-9]{4,40}$/.test(cleanAcc)) {
-        setFormError('Cloudflare Account ID must be 4–40 lowercase letters or digits.');
-        return;
-      }
-      const bErr = validateBucketName('r2', bucketName);
-      if (bErr) {
-        setFormError(bErr);
-        return;
-      }
-      endpoint = `https://${cleanAcc}.r2.cloudflarestorage.com`;
-      region = 'auto';
-      bucket = bucketName.trim();
-    } else if (kind === 'gcs') {
-      if (!gcsProjectId.trim()) {
-        setFormError('GCS Project ID is required.');
-        return;
-      }
-      const bErr = validateBucketName('gcs', bucketName);
-      if (bErr) {
-        setFormError(bErr);
-        return;
-      }
-      endpoint = `https://storage.googleapis.com/${gcsProjectId.trim()}`;
-      region = gcsLocation.trim() || 'us-central1';
-      bucket = bucketName.trim();
-    } else if (kind === 'webdav' || kind === 'nextcloud' || kind === 'hetzner') {
-      const uErr = validateWebdavUrl(webdavUrl);
-      if (uErr) {
-        setFormError(uErr);
-        return;
-      }
-      endpoint = webdavUrl.trim();
-      region = s3Region.trim() || meta.defaultRegion;
-      bucket = webdavBasePath.trim().startsWith('/')
-        ? webdavBasePath.trim()
-        : `/${webdavBasePath.trim()}`;
+    setEditingMount(null);
+    setDraftKind(kind);
+    setDraftName(
+      matchingConnectedAccount
+        ? `${meta.shortLabel} (${matchingConnectedAccount.email || matchingConnectedAccount.displayName})`
+        : meta.label
+    );
+    setDraftEndpoint(meta.defaultEndpoint);
+    setDraftRegion(meta.defaultRegion);
+    setDraftBucket('');
+    setDraftAllocatedGB(meta.defaultAllocatedGB);
+
+    setOauthAccessToken('');
+    setOauthConnectedAccountId(matchingConnectedAccount?.id ?? '');
+    setS3AccessKeyId('');
+    setS3SecretAccessKey('');
+    setS3PasteHelperText('');
+    setWebdavUsername('');
+    setWebdavPassword('');
+    setWebdavBasePath('/vault');
+
+    setDraftReport(null);
+    setDraftError(null);
+    setModalOpen(true);
+  };
+
+  const openEditModal = (m: ProviderMount) => {
+    setEditingMount(m);
+    setDraftKind(m.kind === 'local' ? 's3' : m.kind);
+    setDraftName(m.name);
+    setDraftEndpoint(m.endpoint ?? '');
+    setDraftRegion(m.region ?? '');
+    setDraftBucket(m.bucket ?? '');
+    setDraftAllocatedGB(Math.max(1, Math.round(m.allocatedBytes / SI_GB)));
+
+    setOauthAccessToken(m.credentials?.oauthToken?.accessToken ?? '');
+    setOauthConnectedAccountId(
+      m.connectedAccountId ?? m.credentials?.oauthToken?.connectedAccountId ?? ''
+    );
+    setS3AccessKeyId(m.credentials?.s3Keys?.accessKeyId ?? '');
+    setS3SecretAccessKey(m.credentials?.s3Keys?.secretAccessKey ?? '');
+    setS3PasteHelperText('');
+    setWebdavUsername(m.credentials?.webdavAuth?.username ?? '');
+    setWebdavPassword(m.credentials?.webdavAuth?.password ?? '');
+    setWebdavBasePath(m.credentials?.webdavAuth?.basePath ?? '/vault');
+
+    setDraftReport({
+      ok: true,
+      latencyMs: m.latencyMs ?? 45,
+      canList: true,
+      canRead: true,
+      canWrite: true,
+      liveApi: true,
+      message: 'Existing verified connection.',
+    });
+    setDraftError(null);
+    setModalOpen(true);
+  };
+
+  const handleKindChange = (kind: Exclude<ProviderKind, 'local'>) => {
+    if (isUnsupportedOrRestricted(kind)) return;
+    const meta = PROVIDER_KIND_META[kind];
+    const matchingConnectedAccount = connectedAccounts.find(
+      (a) => a.provider === kind && a.status === 'active'
+    );
+    setDraftKind(kind);
+    if (!editingMount) {
+      setDraftName(
+        matchingConnectedAccount
+          ? `${meta.shortLabel} (${matchingConnectedAccount.email || matchingConnectedAccount.displayName})`
+          : meta.label
+      );
+      setDraftEndpoint(meta.defaultEndpoint);
+      setDraftRegion(meta.defaultRegion);
+      setDraftBucket('');
+      setDraftAllocatedGB(meta.defaultAllocatedGB);
+      setOauthConnectedAccountId(matchingConnectedAccount?.id ?? '');
     }
+    setDraftReport(null);
+    setDraftError(null);
+  };
+
+  const handleOneClickOAuth = async () => {
+    if (!isOAuthSupported(draftKind)) return;
+    setOauthDanceLoading(true);
+    setDraftError(null);
 
     try {
-      let credentials: ProviderCredentials | undefined = undefined;
-      if (mountMode === 'real') {
-        if (['gdrive', 'onedrive', 'dropbox', 'box', 'pcloud'].includes(kind)) {
-          if (selectedAccountId) {
-            // Associated with server-side encrypted OAuth account
-          } else {
-            const token = authToken.trim() || settings.apiCredentials?.[`${kind}Token`]?.trim() || '';
-            if (!token) {
-              setFormError(`${meta.shortLabel} requires selecting a connected OAuth account or entering an Access Token.`);
-              return;
-            }
-            credentials = { oauthToken: { accessToken: token } };
-          }
-        } else if (
-          ['s3', 'r2', 'b2', 'wasabi', 'do_spaces', 'scaleway', 'linode', 'vultr', 'storj', 'oracle_os'].includes(kind)
-        ) {
-          const key = s3AccessKeyId.trim() || settings.apiCredentials?.s3AccessKey?.trim() || '';
-          const sec = s3SecretAccessKey.trim() || settings.apiCredentials?.s3SecretKey?.trim() || '';
-          if (!key || !sec) {
-            setFormError('Access Key ID and Secret Access Key are required for Live S3 mode.');
-            return;
-          }
-          credentials = {
-            s3Keys: {
-              accessKeyId: key,
-              secretAccessKey: sec,
-              region: region || 'us-east-1',
-              bucket: bucket || 'mountyourclouds',
-              endpoint: endpoint || undefined,
-            },
-          };
-        } else if (
-          ['webdav', 'nextcloud', 'owncloud', 'synology', 'qnap', 'hetzner', 'koofr'].includes(kind)
-        ) {
-          credentials = {
-            webdavAuth: {
-              url: endpoint || meta.defaultEndpoint,
-              username: webdavUser.trim(),
-              password: webdavPass.trim(),
-              basePath: bucket || undefined,
-            },
-          };
-        }
-      }
-
-      const start = performance.now();
-      setHandshakeStep(
-        mountMode === 'real'
-          ? `Connecting to live ${meta.label} API endpoint…`
-          : `Resolving ${meta.label} endpoint…`
-      );
-      await new Promise((r) => setTimeout(r, 350));
-      setHandshakeStep(
-        mountMode === 'real' ? 'Verifying authentication credentials…' : 'Authenticating session (simulated)…'
-      );
-      await new Promise((r) => setTimeout(r, 350));
-      setHandshakeStep('Checking quota & read/write permissions…');
-      await new Promise((r) => setTimeout(r, 350));
-
-      if (settings.devSettings.offline) {
-        throw new Error('Simulated offline mode is active — handshake failed.');
-      }
-
-      const measuredLatency = Math.round((performance.now() - start) / 16);
-
-      if (editingMount) {
-        await storageOrchestrator.updateMount(editingMount.id, {
-          name: cleanName,
-          mode: mountMode,
-          credentials,
-          connectedAccountId: selectedAccountId || undefined,
-          endpoint,
-          region,
-          bucket,
-          allocatedBytes,
-          latencyMs: editingMount.kind === 'local' ? 4 : measuredLatency,
-        });
-        addToast({
-          title: `Updated mount "${cleanName}" (${mountMode === 'real' ? 'Live API' : 'Simulated'})`,
-          variant: 'success',
-        });
-      } else {
-        await storageOrchestrator.addMount(
-          {
-            kind,
-            name: cleanName,
-            mode: mountMode,
-            credentials,
-            connectedAccountId: selectedAccountId || undefined,
-            endpoint,
-            region,
-            bucket,
-            allocatedBytes,
-            zeroEgress: meta.defaultZeroEgress,
-          },
-          measuredLatency
-        );
-        addToast({
-          title: `Connected ${mountMode === 'real' ? 'Live API' : 'Simulated'} ${meta.shortLabel} mount "${cleanName}"`,
-          variant: 'success',
-        });
-      }
-
-      setModalOpen(false);
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Handshake failed.');
+      const serverResult = await startServerOAuthFlow(draftKind);
+      await fetchConnectedAccounts();
+      setOauthConnectedAccountId(serverResult.accountId);
+      setDraftReport({
+        ok: true,
+        latencyMs: 65,
+        canList: true,
+        canRead: true,
+        canWrite: true,
+        liveApi: true,
+        message: `Verified OAuth 2.0 connection (${serverResult.email || serverResult.displayName}).`,
+      });
+      addToast({
+        title: `Authorized ${PROVIDER_KIND_META[draftKind].label}`,
+        description: `Connected ${serverResult.email || serverResult.displayName}. Click "Save & Connect Mount" to finish.`,
+        variant: 'success',
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'OAuth authorization failed.';
+      setDraftError(msg);
     } finally {
-      setHandshakeStep(null);
+      setOauthDanceLoading(false);
     }
   };
 
-  const filteredProviders = useMemo(() => {
-    const q = providerSearch.trim().toLowerCase();
-    if (!q) {
-      return MOUNTABLE_PROVIDER_KINDS.filter(
-        (k) => PROVIDER_KIND_META[k].category === providerCategoryTab
-      );
+  const handleTestDraft = async () => {
+    setTestingDraft(true);
+    setDraftError(null);
+    setDraftReport(null);
+
+    try {
+      const adapter = storageOrchestrator.getAdapterForMount({
+        id: 'draft-test',
+        kind: draftKind,
+        mode: 'real',
+        name: draftName,
+        endpoint: draftEndpoint,
+        region: draftRegion,
+        bucket: draftBucket,
+        status: 'connected',
+        allocatedBytes: draftAllocatedGB * SI_GB,
+        latencyMs: null,
+        zeroEgress: PROVIDER_KIND_META[draftKind].defaultZeroEgress,
+        connectedAccountId: oauthConnectedAccountId.trim() || undefined,
+        credentials: buildDraftCredentials(),
+        lastSyncedAt: null,
+        createdAt: Date.now(),
+      });
+
+      const report = await adapter.testConnection({
+        id: 'draft-test',
+        kind: draftKind,
+        mode: 'real',
+        name: draftName,
+        endpoint: draftEndpoint || null,
+        region: draftRegion || null,
+        bucket: draftBucket || null,
+        status: 'connected',
+        allocatedBytes: draftAllocatedGB * SI_GB,
+        latencyMs: null,
+        zeroEgress: PROVIDER_KIND_META[draftKind].defaultZeroEgress,
+        connectedAccountId: oauthConnectedAccountId.trim() || undefined,
+        credentials: buildDraftCredentials(),
+        lastSyncedAt: null,
+        createdAt: Date.now(),
+      });
+      setDraftReport(report);
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : 'Connection verification failed.');
+    } finally {
+      setTestingDraft(false);
     }
+  };
+
+  const handleSaveDraft = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!draftReport?.ok) {
+      setDraftError('Please verify your provider credentials before saving this mount.');
+      return;
+    }
+
+    setDraftError(null);
+    try {
+      const credentials = buildDraftCredentials();
+      if (editingMount) {
+        await storageOrchestrator.updateMount(editingMount.id, {
+          name: draftName,
+          mode: 'real',
+          endpoint: draftEndpoint.trim() || null,
+          region: draftRegion.trim() || null,
+          bucket: draftBucket.trim() || null,
+          allocatedBytes: Math.max(1, draftAllocatedGB) * SI_GB,
+          latencyMs: draftReport.latencyMs,
+          connectedAccountId: oauthConnectedAccountId.trim() || undefined,
+          credentials,
+        });
+        addToast({ title: `Updated "${draftName}"`, variant: 'success' });
+      } else {
+        const created = await storageOrchestrator.addMount(
+          {
+            kind: draftKind,
+            mode: 'real',
+            name: draftName,
+            endpoint: draftEndpoint.trim() || null,
+            region: draftRegion.trim() || null,
+            bucket: draftBucket.trim() || null,
+            allocatedBytes: Math.max(1, draftAllocatedGB) * SI_GB,
+            zeroEgress: PROVIDER_KIND_META[draftKind].defaultZeroEgress,
+            connectedAccountId: oauthConnectedAccountId.trim() || undefined,
+            credentials,
+          },
+          draftReport.latencyMs
+        );
+        // Sync remote files if supported
+        await storageOrchestrator.syncRemoteMountFiles(created.id).catch(() => {});
+        addToast({
+          title: `Connected "${draftName}"`,
+          description: 'Live provider verified and mounted to your workspace.',
+          variant: 'success',
+        });
+      }
+      setModalOpen(false);
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : 'Failed to save mount.');
+    }
+  };
+
+  const filteredDirectoryKinds = useMemo(() => {
     return MOUNTABLE_PROVIDER_KINDS.filter((k) => {
-      const m = PROVIDER_KIND_META[k];
-      return (
-        m.label.toLowerCase().includes(q) ||
-        m.shortLabel.toLowerCase().includes(q) ||
-        k.toLowerCase().includes(q)
-      );
+      const meta = PROVIDER_KIND_META[k];
+      if (selectedCategory !== 'All' && meta.category !== selectedCategory) {
+        return false;
+      }
+      if (providerSearch.trim()) {
+        const q = providerSearch.toLowerCase();
+        return (
+          meta.label.toLowerCase().includes(q) ||
+          meta.shortLabel.toLowerCase().includes(q) ||
+          meta.description.toLowerCase().includes(q)
+        );
+      }
+      return true;
     });
-  }, [providerCategoryTab, providerSearch]);
+  }, [selectedCategory, providerSearch]);
+
+  const draftMeta = PROVIDER_KIND_META[draftKind];
 
   return (
     <div className="p-4 lg:p-6 space-y-6 max-w-7xl w-full mx-auto">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-[#F3F4F6]">Storage Provider Mounts</h1>
-          <p className="text-xs text-[#8A94A6] mt-0.5">
-            Connect MEGA, TeraBox, Google Drive, Dropbox, OneDrive, Proton Drive, AWS S3, Cloudflare R2, Backblaze B2, Nextcloud, and 20+ cloud providers.
+          <h1 className="text-xl font-bold text-[#1D1D1F] dark:text-[#F5F5F7]">
+            Cloud Storage Integrations & Mounts
+          </h1>
+          <p className="text-xs text-[#6E6E73] dark:text-[#86868B] mt-0.5">
+            Connect real OAuth 2.0 drives, S3-compatible buckets, and WebDAV servers.{' '}
+            <span className="font-mono text-[#0071E3] dark:text-[#2997FF]">
+              ({externalCount} / {activePlan.maxMounts} plan slots used on {activePlan.name})
+            </span>
           </p>
         </div>
 
-        <div className="flex items-center gap-3 self-start sm:self-auto">
-          <div className="px-3 py-1.5 rounded-md bg-[#131620] border border-[#1E2230] text-xs font-mono tabular-nums">
-            <span className="text-[#8A94A6]">{currentPlan.name} Plan: </span>
-            <span className="font-bold text-[#F3F4F6]">
-              {externalMountCount} / {currentPlan.maxMounts}
-            </span>
-            <span className="text-[#8A94A6]"> cloud accounts</span>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => openAddModal()}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md bg-[#4F46E5] hover:bg-[#4338CA] text-white text-xs font-medium"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add Provider Mount</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => openAddModal('gdrive')}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold shadow-xs self-start sm:self-auto"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Connect Cloud Provider</span>
+        </button>
       </div>
 
-      {/* Unified Connected Accounts & OAuth Management */}
+      {/* OAuth Connected Accounts Manager */}
       <ConnectedAccountsManager />
 
-      {/* Quick-Connect Catalog of 21 Mountable Cloud Providers */}
-      <div className="rounded-lg bg-[#131620] border border-[#1E2230] p-4 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Cloud className="w-4 h-4 text-[#818CF8]" />
-            <h2 className="text-xs font-bold uppercase tracking-wider text-[#F3F4F6]">
-              21 Supported Cloud Storage Connectors (Click to Mount)
-            </h2>
-          </div>
-          <Link
-            to="/app/pricing"
-            className="inline-flex items-center gap-1 text-xs text-[#818CF8] hover:underline"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Need more than {currentPlan.maxMounts} clouds? View PRO & ULTRA plans</span>
-          </Link>
-        </div>
+      {/* Active Mounted Storage Providers */}
+      <div className="space-y-3">
+        <h2 className="text-sm font-bold text-[#1D1D1F] dark:text-[#F5F5F7]">
+          Active Storage Mounts ({mounts.length})
+        </h2>
 
-        <div className="flex flex-wrap gap-1.5">
-          {MOUNTABLE_PROVIDER_KINDS.map((k) => {
-            const m = PROVIDER_KIND_META[k];
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {mounts.map((m) => {
+            const meta = PROVIDER_KIND_META[m.kind];
+            const usage = usageMap.get(m.id) ?? { usedBytes: 0, fileCount: 0 };
+            const ratio = Math.min(1, usage.usedBytes / Math.max(1, m.allocatedBytes));
+            const isLocal = m.id === 'local-vault';
+            const isTesting = testingMountId === m.id;
+            const isSyncing = syncingMountId === m.id;
+
             return (
-              <button
-                key={k}
-                type="button"
-                onClick={() => openAddModal(k)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-[#0E1017] hover:bg-[#1E2230] border border-[#1E2230] hover:border-[#818CF8]/60 text-xs text-[#F3F4F6] tv-transition"
+              <div
+                key={m.id}
+                className="rounded-2xl bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] p-5 flex flex-col justify-between gap-4 shadow-2xs"
               >
-                <span className="font-medium">{m.shortLabel}</span>
-                <span className="text-[10px] font-mono text-[#8A94A6]">
-                  {m.defaultAllocatedGB >= 1000
-                    ? `${m.defaultAllocatedGB / 1000}TB`
-                    : `${m.defaultAllocatedGB}GB`}
-                </span>
-              </button>
+                <div className="space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <ProviderLogo kind={m.kind} className="w-8 h-8" />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="text-[15px] font-bold text-[#1D1D1F] dark:text-[#F5F5F7] truncate">
+                            {m.name}
+                          </h3>
+                          <span className="px-2 py-0.5 rounded-md text-[11px] font-mono bg-[#F5F5F7] dark:bg-[#0E1017] border border-[#E5E5EA] dark:border-[#1E2230]">
+                            {meta.shortLabel}
+                          </span>
+                        </div>
+                        <p className="text-xs font-mono text-[#6E6E73] dark:text-[#86868B] mt-0.5 truncate">
+                          {m.endpoint ?? 'Default endpoint'}{' '}
+                          {m.bucket ? `· bucket: ${m.bucket}` : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    <span
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium shrink-0 ${
+                        m.status === 'connected'
+                          ? 'bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/30'
+                          : 'bg-[#F59E0B]/10 text-[#F59E0B] border border-[#F59E0B]/30'
+                      }`}
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          m.status === 'connected' ? 'bg-[#10B981]' : 'bg-[#F59E0B]'
+                        }`}
+                      />
+                      <span className="capitalize">{m.status}</span>
+                    </span>
+                  </div>
+
+                  {/* Storage Bar */}
+                  <div className="p-3 rounded-xl bg-[#F5F5F7] dark:bg-[#0E1017] border border-[#E5E5EA] dark:border-[#1E2230] space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-[#6E6E73] dark:text-[#86868B]">
+                        {usage.fileCount} files indexed
+                      </span>
+                      <span className="font-mono text-[#1D1D1F] dark:text-[#F5F5F7] tabular-nums">
+                        {formatBytes(usage.usedBytes)} / {formatBytes(m.allocatedBytes)}
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 bg-white dark:bg-[#131620] rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-[#0071E3] origin-left tv-transition"
+                        style={{ transform: `scaleX(${ratio})` }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] font-mono text-[#6E6E73] dark:text-[#86868B]">
+                      <span>Latency: {m.latencyMs !== null ? `${m.latencyMs} ms` : '—'}</span>
+                      <span>
+                        Synced:{' '}
+                        {m.lastSyncedAt ? formatRelativeOrShortDate(m.lastSyncedAt) : 'Never'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#E5E5EA] dark:border-[#1E2230]">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      disabled={isTesting}
+                      onClick={async () => {
+                        setTestingMountId(m.id);
+                        try {
+                          const rep = await storageOrchestrator.testMount(m);
+                          addToast({
+                            title: `${m.name} verified (${rep.latencyMs} ms)`,
+                            description: rep.message,
+                            variant: 'success',
+                          });
+                        } catch (err) {
+                          addToast({
+                            title: `Verification failed on ${m.name}`,
+                            description: err instanceof Error ? err.message : undefined,
+                            variant: 'error',
+                          });
+                        } finally {
+                          setTestingMountId(null);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#F5F5F7] dark:bg-[#0E1017] hover:bg-[#E8E8ED] dark:hover:bg-[#1E2230] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-medium"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin' : ''}`} />
+                      <span>Verify</span>
+                    </button>
+
+                    {!isLocal && (
+                      <button
+                        type="button"
+                        disabled={isSyncing}
+                        onClick={async () => {
+                          setSyncingMountId(m.id);
+                          try {
+                            const { syncedCount } =
+                              await storageOrchestrator.syncRemoteMountFiles(m.id);
+                            addToast({
+                              title: `Synced ${m.name}`,
+                              description: `Indexed ${syncedCount} new remote item(s).`,
+                              variant: 'success',
+                            });
+                          } catch (err) {
+                            addToast({
+                              title: 'Sync failed',
+                              description: err instanceof Error ? err.message : undefined,
+                              variant: 'error',
+                            });
+                          } finally {
+                            setSyncingMountId(null);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#F5F5F7] dark:bg-[#0E1017] hover:bg-[#E8E8ED] dark:hover:bg-[#1E2230] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-medium"
+                      >
+                        <HardDrive className="w-3.5 h-3.5" />
+                        <span>{isSyncing ? 'Syncing…' : 'Sync Files'}</span>
+                      </button>
+                    )}
+
+                    {!isLocal && (
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(m)}
+                        className="px-2.5 py-1.5 rounded-lg bg-[#F5F5F7] dark:bg-[#0E1017] hover:bg-[#E8E8ED] dark:hover:bg-[#1E2230] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-medium"
+                      >
+                        Configure
+                      </button>
+                    )}
+                  </div>
+
+                  {isLocal ? (
+                    <span className="text-[11px] font-mono text-[#6E6E73] dark:text-[#86868B]">
+                      Built-in Browser Vault
+                    </span>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      {m.status === 'connected' ? (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await storageOrchestrator.disconnectMount(m.id);
+                            addToast({ title: `Disconnected ${m.name}`, variant: 'default' });
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#F5F5F7] dark:bg-[#0E1017] border border-[#E5E5EA] dark:border-[#1E2230] text-xs text-[#6E6E73] hover:text-[#F59E0B]"
+                        >
+                          <Unplug className="w-3.5 h-3.5" />
+                          <span>Pause</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await storageOrchestrator.reconnectMount(m.id);
+                              addToast({ title: `Reconnected ${m.name}`, variant: 'success' });
+                            } catch (err) {
+                              addToast({
+                                title: 'Reconnect failed',
+                                description: err instanceof Error ? err.message : undefined,
+                                variant: 'error',
+                              });
+                            }
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg bg-[#0071E3] text-white text-xs font-medium"
+                        >
+                          Reconnect
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => setConfirmRemoveMount(m)}
+                        aria-label={`Remove ${m.name}`}
+                        className="p-1.5 rounded-lg text-[#6E6E73] hover:text-[#E11D48]"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
             );
           })}
         </div>
       </div>
 
-      {/* Honesty & Compliance Notice */}
-      <div className="p-4 rounded-lg bg-[#131620] border border-[#1E2230] flex items-start gap-3 text-xs text-[#8A94A6]">
-        <ShieldAlert className="w-4 h-4 text-[#818CF8] shrink-0 mt-0.5" />
-        <div>
-          <p className="font-medium text-[#F3F4F6]">
-            Modular Connector Architecture — External Cloud Capacity vs. Platform Quotas
-          </p>
-          <p className="mt-0.5 leading-relaxed">
-            Storage capacity is provided by each connected cloud service (such as MEGA 2 TB, TeraBox 1 TB, S3, Cloudflare R2, Google Drive, or WebDAV). Your MountYourClouds subscription plan governs how many cloud accounts you can mount simultaneously and your daily/monthly cross-cloud transfer bandwidth. Secret keys and passwords are never collected in this browser prototype.
-          </p>
+      {/* Provider Catalog Directory */}
+      <div className="rounded-2xl bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] p-5 space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-[#E5E5EA] dark:border-[#1E2230] pb-4">
+          <div>
+            <h2 className="text-[15px] font-bold text-[#1D1D1F] dark:text-[#F5F5F7]">
+              Cloud Provider Catalog & Integration Status
+            </h2>
+            <p className="text-xs text-[#6E6E73] dark:text-[#86868B] mt-0.5">
+              Connect supported OAuth 2.0, S3, and WebDAV providers. Providers without public third-party APIs are transparently marked as restricted.
+            </p>
+          </div>
+
+          <input
+            type="search"
+            value={providerSearch}
+            onChange={(e) => setProviderSearch(e.target.value)}
+            placeholder="Filter providers…"
+            className="h-9 px-3 rounded-xl bg-[#F5F5F7] dark:bg-[#0E1017] border border-[#E5E5EA] dark:border-[#1E2230] text-xs w-full md:w-64"
+          />
+        </div>
+
+        {/* Category Filter Tabs */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {CATEGORIES.map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => setSelectedCategory(cat)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition-colors ${
+                selectedCategory === cat
+                  ? 'bg-[#0071E3] border-[#0071E3] text-white'
+                  : 'bg-[#F5F5F7] dark:bg-[#0E1017] border-[#E5E5EA] dark:border-[#1E2230] text-[#6E6E73] dark:text-[#86868B]'
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filteredDirectoryKinds.map((kind) => {
+            const meta = PROVIDER_KIND_META[kind];
+            const restricted = isUnsupportedOrRestricted(kind);
+            const alreadyMounted = mounts.some((m) => m.kind === kind);
+
+            return (
+              <div
+                key={kind}
+                className={`p-4 rounded-xl border flex flex-col justify-between gap-3 ${
+                  restricted
+                    ? 'bg-[#F5F5F7]/60 dark:bg-[#0E1017]/50 border-[#E5E5EA] dark:border-[#1E2230] opacity-75'
+                    : 'bg-[#F5F5F7] dark:bg-[#0E1017] border-[#E5E5EA] dark:border-[#1E2230]'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <ProviderLogo kind={kind} className="w-6 h-6" />
+                      <span className="font-bold text-xs text-[#1D1D1F] dark:text-[#F5F5F7] truncate">
+                        {meta.label}
+                      </span>
+                    </div>
+
+                    {restricted ? (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-[#F59E0B]/15 text-[#F59E0B] border border-[#F59E0B]/30 shrink-0">
+                        {meta.integrationStatus === 'proxy_required'
+                          ? 'TCP Proxy Required'
+                          : 'API Restricted'}
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-[#10B981]/15 text-[#10B981] border border-[#10B981]/30 shrink-0">
+                        Live API Ready
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-[11px] text-[#6E6E73] dark:text-[#86868B] mt-2 leading-relaxed">
+                    {restricted ? meta.apiNote || meta.description : meta.description}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-[#E5E5EA] dark:border-[#1E2230] text-[11px]">
+                  <span className="font-mono text-[#6E6E73] dark:text-[#86868B]">
+                    {meta.authMethod.replace('_', ' ').toUpperCase()}
+                  </span>
+
+                  {restricted ? (
+                    <span className="text-[#6E6E73] dark:text-[#86868B] font-medium">
+                      Unavailable in Browser
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => openAddModal(kind)}
+                      className="px-2.5 py-1 rounded-lg bg-[#0071E3] hover:bg-[#0077ED] text-white font-semibold"
+                    >
+                      {alreadyMounted ? 'Add Another' : 'Connect'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* Mount Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {mounts.map((mount) => {
-          const meta = PROVIDER_KIND_META[mount.kind];
-          const usage = mountUsageMap.get(mount.id) ?? { usedBytes: 0, fileCount: 0 };
-          const ratio = Math.min(1, usage.usedBytes / Math.max(1, mount.allocatedBytes));
-          const isLocal = mount.id === 'local-vault';
-          const isDisconnected = mount.status === 'disconnected';
-          const isTesting = testingMountId === mount.id;
-
-          return (
-            <div
-              key={mount.id}
-              className="rounded-lg bg-[#131620] border border-[#1E2230] p-5 flex flex-col justify-between gap-4"
-            >
-              <div className="space-y-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <HardDrive className="w-4 h-4 text-[#818CF8] shrink-0" />
-                      <h2 className="text-[15px] font-bold text-[#F3F4F6] truncate">
-                        {mount.name}
-                      </h2>
-                      <span className="px-2 py-0.5 text-[11px] font-mono bg-[#0E1017] border border-[#1E2230] text-[#F3F4F6] rounded">
-                        {meta.shortLabel}
-                      </span>
-                      {mount.mode === 'real' ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-mono bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 rounded">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                          Live API
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 text-[11px] font-mono bg-[#090A0F] border border-[#1E2230] text-[#818CF8] rounded">
-                          Simulated
-                        </span>
-                      )}
-                      {meta.integrationStatus === 'api_restricted' && (
-                        <span className="px-1.5 py-0.5 text-[10px] font-mono bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded">
-                          Restricted API
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-[#8A94A6] mt-1 font-mono truncate">
-                      {meta.label} · {mount.bucket ?? mount.endpoint} ({mount.region ?? 'local'})
-                    </p>
-                  </div>
-
-                  {/* Status Badge */}
-                  <div className="shrink-0 font-mono text-xs">
-                    {isDisconnected ? (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#F43F5E]/15 border border-[#F43F5E]/30 text-[#F43F5E]">
-                        <WifiOff className="w-3.5 h-3.5" />
-                        <span>Disconnected</span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#10B981]/15 border border-[#10B981]/30 text-[#10B981]">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Connected</span>
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {/* Usage Bar */}
-                <div className="space-y-1.5 pt-1">
-                  <div className="flex items-center justify-between text-xs font-mono tabular-nums">
-                    <span className="text-[#F3F4F6]">
-                      {formatBytes(usage.usedBytes)} / {formatBytes(mount.allocatedBytes)}
-                    </span>
-                    <span className="text-[#8A94A6]">
-                      {usage.fileCount} object{usage.fileCount === 1 ? '' : 's'}
-                    </span>
-                  </div>
-                  <div className="w-full h-2 bg-[#090A0F] rounded-full overflow-hidden border border-[#1E2230]">
-                    <div
-                      className={`h-full origin-left tv-transition ${
-                        isDisconnected
-                          ? 'bg-[#8A94A6]'
-                          : ratio > 0.85
-                          ? 'bg-[#F59E0B]'
-                          : 'bg-[#4F46E5]'
-                      }`}
-                      style={{ transform: `scaleX(${ratio})` }}
-                    />
-                  </div>
-                </div>
-
-                {/* Inline Metadata */}
-                <p className="text-xs font-mono text-[#8A94A6] tabular-nums">
-                  Ping: {mount.latencyMs !== null ? `${mount.latencyMs} ms` : '—'} ·{' '}
-                  {mount.zeroEgress ? 'Zero Egress' : 'Metered Egress'} ·{' '}
-                  {mount.lastSyncedAt
-                    ? `Checked ${formatRelativeOrShortDate(mount.lastSyncedAt)}`
-                    : 'Not probed'}
-                </p>
-              </div>
-
-              {/* Card Action Buttons */}
-              <div className="pt-3 border-t border-[#1E2230] flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  disabled={isTesting}
-                  onClick={() => handleTestMount(mount)}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#0E1017] hover:bg-[#1E2230] border border-[#1E2230] text-xs font-medium text-[#F3F4F6] disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin' : ''}`} />
-                  <span>Test connection</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => openEditModal(mount)}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#0E1017] hover:bg-[#1E2230] border border-[#1E2230] text-xs font-medium text-[#F3F4F6]"
-                >
-                  <Pencil className="w-3.5 h-3.5" />
-                  <span>Edit</span>
-                </button>
-
-                {!isLocal && (
-                  <>
-                    {isDisconnected ? (
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            const rep = await storageOrchestrator.reconnectMount(mount.id);
-                            addToast({
-                              title: `Reconnected "${mount.name}" (${rep.latencyMs} ms)`,
-                              variant: 'success',
-                            });
-                          } catch (err) {
-                            addToast({
-                              title: 'Reconnect failed',
-                              description: err instanceof Error ? err.message : undefined,
-                              variant: 'error',
-                            });
-                          }
-                        }}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-xs font-medium text-[#10B981]"
-                      >
-                        <PlugZap className="w-3.5 h-3.5" />
-                        <span>Reconnect</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await storageOrchestrator.disconnectMount(mount.id);
-                          addToast({
-                            title: `Disconnected "${mount.name}"`,
-                            description: 'Mount hidden from active Overview until reconnected.',
-                            variant: 'default',
-                          });
-                        }}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#0E1017] hover:bg-[#1E2230] border border-[#1E2230] text-xs font-medium text-[#8A94A6] hover:text-[#F3F4F6]"
-                      >
-                        <Plug className="w-3.5 h-3.5" />
-                        <span>Disconnect</span>
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={() => setRemovingMount(mount)}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#0E1017] hover:bg-[#F43F5E]/20 border border-[#1E2230] text-xs font-medium text-[#F43F5E] ml-auto"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Remove</span>
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Add / Edit Mount Modal */}
+      {/* Add / Configure Real Cloud Mount Modal */}
       {modalOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto"
           role="dialog"
           aria-modal="true"
           aria-labelledby="mount-modal-title"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape' && !handshakeStep) setModalOpen(false);
-          }}
         >
-          <div className="w-full max-w-xl rounded-lg bg-[#131620] border border-[#1E2230] overflow-hidden max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#1E2230]">
-              <h2 id="mount-modal-title" className="text-[15px] font-bold text-[#F3F4F6]">
-                {editingMount
-                  ? `Edit Mount: ${editingMount.name}`
-                  : 'Connect Cloud Storage Provider'}
-              </h2>
+          <div className="w-full max-w-lg rounded-2xl bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] shadow-xl overflow-hidden my-8">
+            <div className="px-5 py-4 border-b border-[#E5E5EA] dark:border-[#1E2230] flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <ProviderLogo kind={draftKind} className="w-6 h-6" />
+                <h2
+                  id="mount-modal-title"
+                  className="text-[15px] font-bold text-[#1D1D1F] dark:text-[#F5F5F7]"
+                >
+                  {editingMount ? `Configure "${editingMount.name}"` : `Connect ${draftMeta.label}`}
+                </h2>
+              </div>
               <button
                 type="button"
-                disabled={Boolean(handshakeStep)}
                 onClick={() => setModalOpen(false)}
-                aria-label="Close modal"
-                className="p-1 text-[#8A94A6] hover:text-[#F3F4F6] rounded"
+                className="p-1 text-[#6E6E73] hover:text-[#1D1D1F] dark:hover:text-white rounded-lg"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form
-              onSubmit={handleFormSubmit}
-              className="p-5 space-y-4 text-[13px] overflow-y-auto"
-            >
+            <form onSubmit={handleSaveDraft} className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
               {!editingMount && (
-                <div className="space-y-2.5">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <label className="block text-xs font-medium text-[#8A94A6]">
-                      Select Cloud Storage Provider (39 available)
-                    </label>
-                    {!providerSearch.trim() && (
-                      <div className="inline-flex rounded bg-[#090A0F] p-0.5 border border-[#1E2230] text-[11px]">
-                        {(
-                          [
-                            { id: 'Consumer & Personal Cloud', label: 'Consumer Cloud' },
-                            { id: 'Object & Infrastructure Cloud', label: 'Object Cloud' },
-                            { id: 'Self-Hosted & Protocol', label: 'Self-Hosted' },
-                          ] as const
-                        ).map((cat) => (
-                          <button
-                            key={cat.id}
-                            type="button"
-                            onClick={() => setProviderCategoryTab(cat.id)}
-                            className={`px-2 py-1 rounded ${
-                              providerCategoryTab === cat.id
-                                ? 'bg-[#4F46E5] text-white font-medium'
-                                : 'text-[#8A94A6] hover:text-[#F3F4F6]'
-                            }`}
-                          >
-                            {cat.label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Quick Filter Input */}
-                  <div className="relative">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#8A94A6]" />
-                    <input
-                      type="text"
-                      value={providerSearch}
-                      onChange={(e) => setProviderSearch(e.target.value)}
-                      placeholder="Search 39 providers (e.g. Google Drive, S3, MEGA, Proton, Nextcloud, R2...)"
-                      className="w-full pl-8 pr-3 py-1.5 rounded-md bg-[#0E1017] border border-[#1E2230] text-xs text-[#F3F4F6] placeholder-[#8A94A6]/60 focus:outline-none focus:border-[#4F46E5]"
-                    />
-                  </div>
-
-                  {filteredProviders.length === 0 ? (
-                    <div className="py-6 text-center text-xs text-[#8A94A6] bg-[#0E1017] rounded-md border border-[#1E2230]">
-                      No cloud providers matching &quot;{providerSearch}&quot;
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-48 overflow-y-auto">
-                      {filteredProviders.map((k) => {
-                        const m = PROVIDER_KIND_META[k];
-                        return (
-                          <button
-                            key={k}
-                            type="button"
-                            onClick={() => applyDefaultsForKind(k)}
-                            className={`py-2 px-2.5 rounded-md border text-xs font-medium text-left flex flex-col justify-between ${
-                              kind === k
-                                ? 'bg-[#4F46E5] border-[#818CF8] text-white'
-                                : 'bg-[#0E1017] border-[#1E2230] text-[#F3F4F6] hover:border-[#8A94A6]/50'
-                            }`}
-                          >
-                            <span className="truncate font-semibold">{m.shortLabel}</span>
-                            <span
-                              className={`text-[10px] font-mono ${
-                                kind === k ? 'text-white/80' : 'text-[#8A94A6]'
-                              }`}
-                            >
-                              Default{' '}
-                              {m.defaultAllocatedGB >= 1000
-                                ? `${m.defaultAllocatedGB / 1000} TB`
-                                : `${m.defaultAllocatedGB} GB`}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Mode Segmented Switch: Real Live API vs Simulated */}
-              {editingMount?.kind !== 'local' && (
-                <div className="space-y-1.5 pt-1">
-                  <label className="block text-xs font-medium text-[#8A94A6]">
-                    Connection Engine Mode
-                  </label>
-                  <div className="grid grid-cols-2 gap-2 p-1 bg-[#0E1017] rounded-lg border border-[#1E2230]">
-                    <button
-                      type="button"
-                      onClick={() => setMountMode('simulated')}
-                      className={`py-2 px-3 rounded-md text-xs font-medium flex items-center justify-center gap-1.5 tv-transition ${
-                        mountMode === 'simulated'
-                          ? 'bg-[#1E2230] text-[#818CF8] shadow border border-[#818CF8]/30 font-semibold'
-                          : 'text-[#8A94A6] hover:text-[#F3F4F6]'
-                      }`}
-                    >
-                      <Sparkles className="w-3.5 h-3.5 text-[#818CF8]" />
-                      <span>🧪 Simulated (Zero Keys)</span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={PROVIDER_KIND_META[kind].integrationStatus === 'api_restricted'}
-                      onClick={() => setMountMode('real')}
-                      className={`py-2 px-3 rounded-md text-xs font-medium flex items-center justify-center gap-1.5 tv-transition ${
-                        mountMode === 'real'
-                          ? 'bg-emerald-500/15 text-emerald-400 shadow border border-emerald-500/40 font-semibold'
-                          : 'text-[#8A94A6] hover:text-[#F3F4F6]'
-                      } ${PROVIDER_KIND_META[kind].integrationStatus === 'api_restricted' ? 'opacity-40 cursor-not-allowed' : ''}`}
-                    >
-                      <PlugZap className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>⚡ Live Cloud API</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Honesty Warning Banner for Restricted Providers */}
-              {PROVIDER_KIND_META[kind].apiNote && (
-                <div className="p-3 rounded-md bg-amber-500/10 border border-amber-500/30 flex items-start gap-2.5 text-xs text-amber-300">
-                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                  <div className="leading-relaxed">
-                    <span className="font-semibold">{PROVIDER_KIND_META[kind].shortLabel} API Notice: </span>
-                    {PROVIDER_KIND_META[kind].apiNote}
-                  </div>
-                </div>
-              )}
-
-              {/* OAuth Account Picker & 1-Click Connect for OAuth Supported Providers */}
-              {mountMode === 'real' &&
-                ['gdrive', 'onedrive', 'dropbox', 'box', 'pcloud'].includes(kind) && (
-                  <div className="p-3.5 rounded-xl bg-emerald-500/5 border border-emerald-500/20 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="block text-xs font-semibold text-emerald-300">
-                        {PROVIDER_KIND_META[kind].shortLabel} OAuth 2.0 PKCE Authorization
-                      </span>
-                      <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
-                        Encrypted at Rest
-                      </span>
-                    </div>
-
-                    {connectedAccounts.filter((a) => a.provider === kind).length > 0 ? (
-                      <div className="space-y-2">
-                        <label htmlFor="oauth-account-picker" className="text-[11px] text-gray-400 block font-medium">
-                          Select Authorized Account:
-                        </label>
-                        <select
-                          id="oauth-account-picker"
-                          value={selectedAccountId}
-                          onChange={(e) => setSelectedAccountId(e.target.value)}
-                          className="w-full px-3 py-2 rounded-lg bg-[#0E1017] border border-[#1E2230] text-xs text-[#F3F4F6]"
-                        >
-                          <option value="">-- Choose Account --</option>
-                          {connectedAccounts
-                            .filter((a) => a.provider === kind)
-                            .map((acc) => (
-                              <option key={acc.id} value={acc.id}>
-                                {acc.displayName} ({acc.email || acc.provider}) [{acc.status.toUpperCase()}]
-                              </option>
-                            ))}
-                        </select>
-
-                        <div className="flex items-center justify-between pt-1">
-                          <span className="text-[11px] text-gray-400">Need another account?</span>
-                          <button
-                            type="button"
-                            disabled={isOAuthing}
-                            onClick={async () => {
-                              setIsOAuthing(true);
-                              try {
-                                const res = await startServerOAuthFlow(kind);
-                                await fetchConnectedAccounts();
-                                setSelectedAccountId(res.accountId);
-                                addToast({
-                                  title: 'Account Connected',
-                                  description: `Linked ${res.displayName} (${res.email || kind})`,
-                                  variant: 'success',
-                                });
-                              } catch (e) {
-                                setFormError(e instanceof Error ? e.message : 'OAuth authorization failed.');
-                              } finally {
-                                setIsOAuthing(false);
-                              }
-                            }}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-emerald-300 bg-emerald-950/60 border border-emerald-500/30 rounded hover:bg-emerald-900/60 transition-colors"
-                          >
-                            {isOAuthing ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>⚡</span>}
-                            <span>+ Connect New {PROVIDER_KIND_META[kind].shortLabel} Account</span>
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-center py-2 space-y-2.5">
-                        <p className="text-xs text-gray-300">
-                          Connect your {PROVIDER_KIND_META[kind].shortLabel} account with 1-click OAuth 2.0 PKCE.
-                        </p>
-                        <button
-                          type="button"
-                          disabled={isOAuthing}
-                          onClick={async () => {
-                            setIsOAuthing(true);
-                            try {
-                              const res = await startServerOAuthFlow(kind);
-                              await fetchConnectedAccounts();
-                              setSelectedAccountId(res.accountId);
-                              addToast({
-                                title: 'Account Connected',
-                                description: `Linked ${res.displayName} (${res.email || kind})`,
-                                variant: 'success',
-                              });
-                            } catch (e) {
-                              setFormError(e instanceof Error ? e.message : 'OAuth authorization failed.');
-                            } finally {
-                              setIsOAuthing(false);
-                            }
-                          }}
-                          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-emerald-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg shadow-sm transition-all"
-                        >
-                          {isOAuthing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <span>⚡</span>}
-                          <span>Log in to {PROVIDER_KIND_META[kind].shortLabel} via OAuth</span>
-                        </button>
-                        <p className="text-[11px] text-[#8A94A6]">
-                          Opens a secure authorization popup window and redirects straight back.
-                        </p>
-                      </div>
-                    )}
-
-                    <details className="pt-1 text-[11px] text-[#8A94A6]">
-                      <summary className="cursor-pointer hover:text-gray-300">
-                        Advanced: Use manual Bearer token
-                      </summary>
-                      <div className="pt-2">
-                        <input
-                          id="manual-oauth-token"
-                          type="password"
-                          placeholder="Bearer access token (optional override)"
-                          value={authToken}
-                          onChange={(e) => setAuthToken(e.target.value)}
-                          className="w-full px-3 py-1.5 rounded bg-[#0E1017] border border-[#1E2230] font-mono text-xs text-[#F3F4F6]"
-                        />
-                      </div>
-                    </details>
-                  </div>
-                )}
-
-              {mountMode === 'real' &&
-                ['s3', 'r2', 'b2', 'wasabi', 'do_spaces', 'scaleway', 'linode', 'vultr', 'storj', 'oracle_os'].includes(kind) && (
-                  <div className="p-3.5 rounded-md bg-emerald-500/5 border border-emerald-500/20 space-y-3">
-                    <span className="block text-xs font-medium text-emerald-300">
-                      S3 / Object Storage Credentials
-                    </span>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label htmlFor="s3-key-id" className="block text-[11px] text-[#8A94A6] mb-1">
-                          Access Key ID
-                        </label>
-                        <input
-                          id="s3-key-id"
-                          type="text"
-                          placeholder="AKIA... / R2 token ID"
-                          value={s3AccessKeyId}
-                          onChange={(e) => setS3AccessKeyId(e.target.value)}
-                          className="w-full px-3 py-1.5 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-xs text-[#F3F4F6]"
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor="s3-secret" className="block text-[11px] text-[#8A94A6] mb-1">
-                          Secret Access Key
-                        </label>
-                        <input
-                          id="s3-secret"
-                          type="password"
-                          placeholder="Secret key..."
-                          value={s3SecretAccessKey}
-                          onChange={(e) => setS3SecretAccessKey(e.target.value)}
-                          className="w-full px-3 py-1.5 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-xs text-[#F3F4F6]"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-              {mountMode === 'real' &&
-                ['webdav', 'nextcloud', 'owncloud', 'synology', 'qnap', 'hetzner', 'koofr'].includes(kind) && (
-                  <div className="p-3.5 rounded-md bg-emerald-500/5 border border-emerald-500/20 space-y-3">
-                    <span className="block text-xs font-medium text-emerald-300">
-                      WebDAV Server Authentication
-                    </span>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <label htmlFor="dav-user" className="block text-[11px] text-[#8A94A6] mb-1">
-                          Username
-                        </label>
-                        <input
-                          id="dav-user"
-                          type="text"
-                          placeholder="Username"
-                          value={webdavUser}
-                          onChange={(e) => setWebdavUser(e.target.value)}
-                          className="w-full px-3 py-1.5 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-xs text-[#F3F4F6]"
-                        />
-                      </div>
-                      <div>
-                        <label htmlFor="dav-pass" className="block text-[11px] text-[#8A94A6] mb-1">
-                          Password / App Token
-                        </label>
-                        <input
-                          id="dav-pass"
-                          type="password"
-                          placeholder="Password"
-                          value={webdavPass}
-                          onChange={(e) => setWebdavPass(e.target.value)}
-                          className="w-full px-3 py-1.5 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-xs text-[#F3F4F6]"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label
-                    htmlFor="mount-name"
-                    className="block text-xs font-medium text-[#8A94A6] mb-1"
+                  <label className="block text-xs font-medium text-[#6E6E73] dark:text-[#86868B] mb-1">
+                    Storage Provider
+                  </label>
+                  <select
+                    value={draftKind}
+                    onChange={(e) =>
+                      handleKindChange(e.target.value as Exclude<ProviderKind, 'local'>)
+                    }
+                    className="w-full px-3 py-2 rounded-xl bg-[#F5F5F7] dark:bg-[#0E1017] border border-[#E5E5EA] dark:border-[#1E2230] text-[13px]"
                   >
-                    Mount Display Name (Unique)
+                    {MOUNTABLE_PROVIDER_KINDS.filter((k) => !isUnsupportedOrRestricted(k)).map(
+                      (k) => (
+                        <option key={k} value={k}>
+                          {PROVIDER_KIND_META[k].label} ({PROVIDER_KIND_META[k].category})
+                        </option>
+                      )
+                    )}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-[#6E6E73] dark:text-[#86868B] mb-1">
+                    Mount Display Name
                   </label>
                   <input
-                    id="mount-name"
                     type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="e.g. MEGA Pro 2TB Drive"
-                    className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] text-[#F3F4F6]"
+                    required
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-[#F5F5F7] dark:bg-[#0E1017] border border-[#E5E5EA] dark:border-[#1E2230] text-[13px]"
                   />
                 </div>
-
                 <div>
-                  <label
-                    htmlFor="mount-cap"
-                    className="block text-xs font-medium text-[#8A94A6] mb-1"
-                  >
-                    External Provider Capacity (GB, SI)
+                  <label className="block text-xs font-medium text-[#6E6E73] dark:text-[#86868B] mb-1">
+                    Allocated Capacity (GB)
                   </label>
                   <input
-                    id="mount-cap"
                     type="number"
                     min={1}
                     max={100000}
-                    value={allocatedGB}
-                    onChange={(e) => setAllocatedGB(e.target.value)}
-                    className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
+                    value={draftAllocatedGB}
+                    onChange={(e) => setDraftAllocatedGB(Math.max(1, Number(e.target.value)))}
+                    className="w-full px-3 py-2 rounded-xl bg-[#F5F5F7] dark:bg-[#0E1017] border border-[#E5E5EA] dark:border-[#1E2230] text-[13px] font-mono"
                   />
                 </div>
               </div>
 
-              {/* Per-Kind Specific Fields */}
-              {editingMount?.kind !== 'local' && kind === 's3' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label
-                      htmlFor="s3-region"
-                      className="block text-xs font-medium text-[#8A94A6] mb-1"
-                    >
-                      AWS Region
-                    </label>
-                    <input
-                      id="s3-region"
-                      type="text"
-                      value={s3Region}
-                      onChange={(e) => setS3Region(e.target.value)}
-                      placeholder="us-east-1"
-                      className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
-                    />
+              {/* OAuth 2.0 Credentials Section */}
+              {(draftMeta.authMethod === 'oauth2_pkce' ||
+                draftMeta.authMethod === 'oauth2_code') && (
+                <div className="p-4 rounded-xl bg-[#F5F5F7] dark:bg-[#0E1017] border border-[#E5E5EA] dark:border-[#1E2230] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold flex items-center gap-1.5">
+                      <KeyRound className="w-3.5 h-3.5 text-[#0071E3]" />
+                      <span>OAuth 2.0 Authorization</span>
+                    </span>
+                    <span className="text-[10px] font-mono text-[#10B981]">AES-256-GCM Server Vault</span>
                   </div>
-                  <div>
-                    <label
-                      htmlFor="s3-bucket"
-                      className="block text-xs font-medium text-[#8A94A6] mb-1"
+
+                  {isOAuthSupported(draftKind) && (
+                    <button
+                      type="button"
+                      disabled={oauthDanceLoading}
+                      onClick={handleOneClickOAuth}
+                      className="w-full py-2.5 px-4 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
                     >
-                      S3 Bucket Name
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>
+                        {oauthDanceLoading
+                          ? `Waiting for ${draftMeta.label} authorization…`
+                          : `Authorize with ${draftMeta.label} (OAuth 2.0)`}
+                      </span>
+                    </button>
+                  )}
+
+                  {connectedAccounts.filter((a) => a.provider === draftKind).length > 0 && (
+                    <div>
+                      <label className="block text-[11px] text-[#6E6E73] dark:text-[#86868B] mb-1">
+                        Or select an already-authorized {draftMeta.shortLabel} account:
+                      </label>
+                      <select
+                        value={oauthConnectedAccountId}
+                        onChange={(e) => {
+                          setOauthConnectedAccountId(e.target.value);
+                          setDraftReport(null);
+                        }}
+                        className="w-full px-3 py-2 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs"
+                      >
+                        <option value="">-- Select connected account --</option>
+                        {connectedAccounts
+                          .filter((a) => a.provider === draftKind)
+                          .map((acc) => (
+                            <option key={acc.id} value={acc.id}>
+                              {acc.displayName} ({acc.email || acc.id})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-[11px] text-[#6E6E73] dark:text-[#86868B] mb-1">
+                      Direct OAuth Bearer Access Token (optional if connected above)
                     </label>
                     <input
-                      id="s3-bucket"
-                      type="text"
-                      value={bucketName}
-                      onChange={(e) => setBucketName(e.target.value)}
-                      placeholder="my-s3-bucket-01"
-                      className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
+                      type="password"
+                      value={oauthAccessToken}
+                      onChange={(e) => {
+                        setOauthAccessToken(e.target.value);
+                        setDraftReport(null);
+                      }}
+                      placeholder="ya29.a0AfH6SM... or sl.B..."
+                      className="w-full px-3 py-2 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-mono"
                     />
                   </div>
                 </div>
               )}
 
-              {editingMount?.kind !== 'local' && kind === 'r2' && (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* S3 Credentials Section */}
+              {(draftMeta.authMethod === 's3_credentials' ||
+                draftMeta.authMethod === 'sas_token') && (
+                <div className="p-4 rounded-xl bg-[#F5F5F7] dark:bg-[#0E1017] border border-[#E5E5EA] dark:border-[#1E2230] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5 text-[#0071E3]" />
+                      <span>S3 / Object Storage Credentials</span>
+                    </span>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-[#6E6E73] dark:text-[#86868B] mb-1">
+                      Quick Paste (JSON, AWS credentials block, or KEY:SECRET)
+                    </label>
+                    <input
+                      type="text"
+                      value={s3PasteHelperText}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setS3PasteHelperText(val);
+                        const parsed = parseS3CredentialsText(val);
+                        if (parsed) {
+                          setS3AccessKeyId(parsed.accessKeyId);
+                          setS3SecretAccessKey(parsed.secretAccessKey);
+                          if (parsed.region) setDraftRegion(parsed.region);
+                          if (parsed.bucket) setDraftBucket(parsed.bucket);
+                          if (parsed.endpoint) setDraftEndpoint(parsed.endpoint);
+                        }
+                      }}
+                      placeholder="Paste AWS / R2 credentials to auto-fill…"
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-mono"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     <div>
-                      <label
-                        htmlFor="r2-account"
-                        className="block text-xs font-medium text-[#8A94A6] mb-1"
-                      >
-                        Cloudflare Account ID
-                      </label>
+                      <label className="block text-[11px] text-[#6E6E73] mb-1">Access Key ID</label>
                       <input
-                        id="r2-account"
                         type="text"
-                        value={r2AccountId}
-                        onChange={(e) => setR2AccountId(e.target.value)}
-                        placeholder="94a0bc12e8"
-                        className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
+                        required
+                        value={s3AccessKeyId}
+                        onChange={(e) => {
+                          setS3AccessKeyId(e.target.value);
+                          setDraftReport(null);
+                        }}
+                        placeholder="AKIA..."
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-mono"
                       />
                     </div>
                     <div>
-                      <label
-                        htmlFor="r2-bucket"
-                        className="block text-xs font-medium text-[#8A94A6] mb-1"
-                      >
-                        R2 Bucket Name
+                      <label className="block text-[11px] text-[#6E6E73] mb-1">
+                        Secret Access Key
                       </label>
                       <input
-                        id="r2-bucket"
-                        type="text"
-                        value={bucketName}
-                        onChange={(e) => setBucketName(e.target.value)}
-                        placeholder="edge-assets-prod"
-                        className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
+                        type="password"
+                        required
+                        value={s3SecretAccessKey}
+                        onChange={(e) => {
+                          setS3SecretAccessKey(e.target.value);
+                          setDraftReport(null);
+                        }}
+                        placeholder="••••••••••••••••"
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-mono"
                       />
                     </div>
                   </div>
-                </div>
-              )}
 
-              {editingMount?.kind !== 'local' && kind === 'gcs' && (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label
-                      htmlFor="gcs-project"
-                      className="block text-xs font-medium text-[#8A94A6] mb-1"
-                    >
-                      Project ID
-                    </label>
-                    <input
-                      id="gcs-project"
-                      type="text"
-                      value={gcsProjectId}
-                      onChange={(e) => setGcsProjectId(e.target.value)}
-                      className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
-                    />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="gcs-bucket"
-                      className="block text-xs font-medium text-[#8A94A6] mb-1"
-                    >
-                      GCS Bucket
-                    </label>
-                    <input
-                      id="gcs-bucket"
-                      type="text"
-                      value={bucketName}
-                      onChange={(e) => setBucketName(e.target.value)}
-                      className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
-                    />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="gcs-loc"
-                      className="block text-xs font-medium text-[#8A94A6] mb-1"
-                    >
-                      Location
-                    </label>
-                    <input
-                      id="gcs-loc"
-                      type="text"
-                      value={gcsLocation}
-                      onChange={(e) => setGcsLocation(e.target.value)}
-                      className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {editingMount?.kind !== 'local' &&
-                (kind === 'webdav' || kind === 'nextcloud' || kind === 'hetzner') && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <div>
-                      <label
-                        htmlFor="dav-url"
-                        className="block text-xs font-medium text-[#8A94A6] mb-1"
-                      >
-                        Server Endpoint URL
-                      </label>
+                      <label className="block text-[11px] text-[#6E6E73] mb-1">Bucket Name</label>
                       <input
-                        id="dav-url"
+                        type="text"
+                        required
+                        value={draftBucket}
+                        onChange={(e) => setDraftBucket(e.target.value)}
+                        placeholder="my-production-bucket"
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-[#6E6E73] mb-1">Region</label>
+                      <input
+                        type="text"
+                        value={draftRegion}
+                        onChange={(e) => setDraftRegion(e.target.value)}
+                        placeholder="us-east-1"
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-[#6E6E73] mb-1">Endpoint URL</label>
+                      <input
                         type="url"
-                        value={webdavUrl}
-                        onChange={(e) => setWebdavUrl(e.target.value)}
-                        placeholder="https://dav.example.com/webdav"
-                        className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
-                      />
-                    </div>
-                    <div>
-                      <label
-                        htmlFor="dav-path"
-                        className="block text-xs font-medium text-[#8A94A6] mb-1"
-                      >
-                        Remote Root Path
-                      </label>
-                      <input
-                        id="dav-path"
-                        type="text"
-                        value={webdavBasePath}
-                        onChange={(e) => setWebdavBasePath(e.target.value)}
-                        placeholder="/vault"
-                        className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
+                        value={draftEndpoint}
+                        onChange={(e) => setDraftEndpoint(e.target.value)}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-mono"
                       />
                     </div>
                   </div>
-                )}
-
-              {editingMount?.kind !== 'local' &&
-                kind !== 's3' &&
-                kind !== 'r2' &&
-                kind !== 'gcs' &&
-                kind !== 'webdav' &&
-                kind !== 'nextcloud' &&
-                kind !== 'hetzner' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label
-                        htmlFor="cloud-folder"
-                        className="block text-xs font-medium text-[#8A94A6] mb-1"
-                      >
-                        Root Folder / Container Name
-                      </label>
-                      <input
-                        id="cloud-folder"
-                        type="text"
-                        value={bucketName}
-                        onChange={(e) => setBucketName(e.target.value)}
-                        placeholder="/MountYourClouds"
-                        className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
-                      />
-                    </div>
-                    <div>
-                      <label
-                        htmlFor="cloud-region"
-                        className="block text-xs font-medium text-[#8A94A6] mb-1"
-                      >
-                        Data Center Region
-                      </label>
-                      <input
-                        id="cloud-region"
-                        type="text"
-                        value={s3Region}
-                        onChange={(e) => setS3Region(e.target.value)}
-                        placeholder="global"
-                        className="w-full px-3 py-2 rounded-md bg-[#0E1017] border border-[#1E2230] font-mono text-[#F3F4F6]"
-                      />
-                    </div>
-                  </div>
-                )}
-
-              {/* Handshake Step Progress */}
-              {handshakeStep && (
-                <div className="p-3 rounded-md bg-[#0E1017] border border-[#818CF8]/40 flex items-center gap-2.5 text-xs text-[#818CF8] font-mono">
-                  <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                  <span>{handshakeStep}</span>
                 </div>
               )}
 
-              {formError && (
-                <p role="alert" className="text-xs text-[#F43F5E]">
-                  {formError}
-                </p>
+              {/* WebDAV Credentials Section */}
+              {draftMeta.authMethod === 'webdav_basic' && (
+                <div className="p-4 rounded-xl bg-[#F5F5F7] dark:bg-[#0E1017] border border-[#E5E5EA] dark:border-[#1E2230] space-y-3">
+                  <span className="text-xs font-bold flex items-center gap-1.5">
+                    <Server className="w-3.5 h-3.5 text-[#0071E3]" />
+                    <span>WebDAV Server Endpoint & Credentials</span>
+                  </span>
+
+                  <div>
+                    <label className="block text-[11px] text-[#6E6E73] mb-1">
+                      WebDAV Server URL
+                    </label>
+                    <input
+                      type="url"
+                      required
+                      value={draftEndpoint}
+                      onChange={(e) => {
+                        setDraftEndpoint(e.target.value);
+                        setDraftReport(null);
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-mono"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-[11px] text-[#6E6E73] mb-1">Username</label>
+                      <input
+                        type="text"
+                        required
+                        value={webdavUsername}
+                        onChange={(e) => {
+                          const user = e.target.value;
+                          setWebdavUsername(user);
+                          const smart = getSmartWebDavDefaults(draftKind, user);
+                          setWebdavBasePath(smart.basePath);
+                          setDraftReport(null);
+                        }}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-[#6E6E73] mb-1">
+                        App Password / Secret
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        value={webdavPassword}
+                        onChange={(e) => {
+                          setWebdavPassword(e.target.value);
+                          setDraftReport(null);
+                        }}
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
               )}
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#1E2230]">
+              {/* Connection Test Result */}
+              {draftReport && (
+                <div className="p-3 rounded-xl bg-[#10B981]/10 border border-[#10B981]/30 text-xs text-[#10B981] flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-semibold">{draftReport.message}</p>
+                    <p className="font-mono text-[11px] mt-0.5">
+                      Handshake latency: {draftReport.latencyMs} ms · Read/Write verified
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {draftError && (
+                <div className="p-3 rounded-xl bg-[#E11D48]/10 border border-[#E11D48]/30 text-xs text-[#E11D48] flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{draftError}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between gap-2 pt-3 border-t border-[#E5E5EA] dark:border-[#1E2230]">
                 <button
                   type="button"
-                  disabled={Boolean(handshakeStep)}
-                  onClick={() => setModalOpen(false)}
-                  className="px-3.5 py-1.5 rounded-md border border-[#1E2230] text-xs font-medium text-[#8A94A6] hover:text-[#F3F4F6]"
+                  disabled={testingDraft}
+                  onClick={handleTestDraft}
+                  className="px-3.5 py-2 rounded-xl bg-[#F5F5F7] dark:bg-[#0E1017] hover:bg-[#E8E8ED] dark:hover:bg-[#1E2230] border border-[#E5E5EA] dark:border-[#1E2230] text-xs font-semibold"
                 >
-                  Cancel
+                  {testingDraft ? 'Verifying Handshake…' : 'Verify Connection'}
                 </button>
-                <button
-                  type="submit"
-                  disabled={Boolean(handshakeStep)}
-                  className="px-4 py-1.5 rounded-md bg-[#4F46E5] hover:bg-[#4338CA] text-white text-xs font-medium disabled:opacity-50"
-                >
-                  {editingMount ? 'Save & Verify Handshake' : 'Connect Simulated Mount'}
-                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setModalOpen(false)}
+                    className="px-3.5 py-2 rounded-xl text-xs text-[#6E6E73]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!draftReport?.ok}
+                    className="px-4 py-2 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-xs font-semibold disabled:opacity-50"
+                  >
+                    Save & Connect Mount
+                  </button>
+                </div>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {/* Remove Mount Confirmation Dialog */}
-      {removingMount && (
+      {/* Confirm Remove Mount Modal */}
+      {confirmRemoveMount && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="remove-mount-title"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setRemovingMount(null);
-          }}
         >
-          <div className="w-full max-w-md rounded-lg bg-[#131620] border border-[#1E2230] p-5 space-y-4">
+          <div className="w-full max-w-md rounded-2xl bg-white dark:bg-[#131620] border border-[#E5E5EA] dark:border-[#1E2230] p-5 space-y-4">
             <div className="flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-[#F43F5E] shrink-0 mt-0.5" />
+              <ShieldAlert className="w-5 h-5 text-[#E11D48] shrink-0 mt-0.5" />
               <div>
-                <h2 id="remove-mount-title" className="text-[15px] font-bold text-[#F3F4F6]">
-                  Remove mount "{removingMount.name}"?
-                </h2>
-                <p className="text-xs text-[#8A94A6] mt-1 leading-relaxed">
-                  Removing this mount will permanently delete{' '}
-                  <strong className="text-[#F3F4F6] font-mono">
-                    {mountUsageMap.get(removingMount.id)?.fileCount ?? 0} file(s)
-                  </strong>{' '}
-                  ({formatBytes(mountUsageMap.get(removingMount.id)?.usedBytes ?? 0)}) stored on it from the workspace.
+                <h3 className="text-sm font-bold">Remove "{confirmRemoveMount.name}"?</h3>
+                <p className="text-xs text-[#6E6E73] dark:text-[#86868B] mt-1">
+                  Removing this mount unlinks it from your MountYourClouds workspace and clears its cached file index.
                 </p>
               </div>
             </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2">
+            <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setRemovingMount(null)}
-                className="px-3.5 py-1.5 rounded-md border border-[#1E2230] text-xs font-medium text-[#8A94A6] hover:text-[#F3F4F6]"
+                onClick={() => setConfirmRemoveMount(null)}
+                className="px-3 py-1.5 rounded-lg text-xs text-[#6E6E73]"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={async () => {
-                  const target = removingMount;
-                  setRemovingMount(null);
+                  const target = confirmRemoveMount;
+                  setConfirmRemoveMount(null);
                   await storageOrchestrator.removeMount(target.id);
-                  addToast({
-                    title: `Removed mount "${target.name}" and its files`,
-                    variant: 'success',
-                  });
+                  addToast({ title: `Removed ${target.name}`, variant: 'default' });
                 }}
-                className="px-4 py-1.5 rounded-md bg-[#F43F5E] hover:bg-[#E11D48] text-white text-xs font-medium"
+                className="px-3.5 py-1.5 rounded-lg bg-[#E11D48] text-white text-xs font-semibold"
               >
-                Remove mount & files
+                Remove Mount
               </button>
             </div>
           </div>

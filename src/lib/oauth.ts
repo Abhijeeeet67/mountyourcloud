@@ -1,6 +1,45 @@
-import type { ProviderCredentials, ProviderKind } from '../types/domain';
+import type { ProviderKind } from '../types/domain';
+import { clientEnv } from './env';
 
-export type OAuthSupportedProvider = 'gdrive' | 'dropbox' | 'onedrive' | 'box';
+export type OAuthSupportedProvider = 'gdrive' | 'dropbox' | 'onedrive' | 'box' | 'pcloud';
+
+let clientSessionToken: string | null = null;
+
+export function setClientSessionToken(token: string | null): void {
+  clientSessionToken = token;
+  if (typeof window !== 'undefined') {
+    try {
+      if (token) {
+        localStorage.setItem('myc_session_token', token);
+      } else {
+        localStorage.removeItem('myc_session_token');
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+}
+
+export function getClientSessionToken(): string | null {
+  if (clientSessionToken) return clientSessionToken;
+  if (typeof window !== 'undefined') {
+    try {
+      return localStorage.getItem('myc_session_token');
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export function getAuthorizedHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra || {}) };
+  const tok = getClientSessionToken();
+  if (tok) {
+    headers['Authorization'] = `Bearer ${tok}`;
+  }
+  return headers;
+}
 
 export interface OAuthConfig {
   label: string;
@@ -15,21 +54,22 @@ export const OAUTH_CONFIGS: Record<OAuthSupportedProvider, OAuthConfig> = {
   gdrive: {
     label: 'Google Drive',
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-    defaultScopes: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly',
+    defaultScopes:
+      'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly',
     envClientIdKey: 'gdriveClientId',
-    description: 'Official Google Drive REST API v3 OAuth 2.0 PKCE / Token authorization.',
+    description: 'Official Google Drive REST API v3 OAuth 2.0 PKCE authorization.',
   },
   dropbox: {
     label: 'Dropbox',
     authUrl: 'https://www.dropbox.com/oauth2/authorize',
     defaultScopes: 'files.metadata.read files.content.read files.content.write',
     envClientIdKey: 'dropboxKey',
-    description: 'Official Dropbox API v2 OAuth 2.0 PKCE / Token authorization.',
+    description: 'Official Dropbox API v2 OAuth 2.0 PKCE authorization.',
   },
   onedrive: {
     label: 'Microsoft OneDrive',
     authUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-    defaultScopes: 'Files.ReadWrite User.Read',
+    defaultScopes: 'Files.ReadWrite User.Read offline_access',
     envClientIdKey: 'onedriveClientId',
     description: 'Microsoft Graph OAuth 2.0 personal & business drive authorization.',
   },
@@ -40,15 +80,34 @@ export const OAUTH_CONFIGS: Record<OAuthSupportedProvider, OAuthConfig> = {
     envClientIdKey: 'boxClientId',
     description: 'Box Content Cloud OAuth 2.0 authorization.',
   },
+  pcloud: {
+    label: 'pCloud',
+    authUrl: 'https://my.pcloud.com/oauth2/authorize',
+    defaultScopes: '',
+    envClientIdKey: 'pcloudClientId',
+    description: 'pCloud Swiss Vault OAuth 2.0 authorization.',
+  },
 };
+
+export function getDefaultProviderClientId(provider: OAuthSupportedProvider): string {
+  switch (provider) {
+    case 'gdrive':
+      return clientEnv.googleClientId;
+    case 'onedrive':
+      return clientEnv.onedriveClientId;
+    case 'dropbox':
+      return clientEnv.dropboxClientId;
+    case 'box':
+      return clientEnv.boxClientId;
+    case 'pcloud':
+      return clientEnv.pcloudClientId;
+  }
+}
 
 export function isOAuthSupported(kind: ProviderKind): kind is OAuthSupportedProvider {
   return kind in OAUTH_CONFIGS;
 }
 
-/**
- * Generates a cryptographically secure random string for OAuth state / PKCE
- */
 export function generateRandomString(length = 32): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
   const array = new Uint8Array(length);
@@ -58,9 +117,6 @@ export function generateRandomString(length = 32): string {
     .join('');
 }
 
-/**
- * Opens a centered browser popup window for OAuth 2.0 sign-in
- */
 export function openCenteredPopup(url: string, title: string, w = 600, h = 720): Window | null {
   if (typeof window === 'undefined') return null;
   const dualScreenLeft = window.screenLeft ?? window.screenX ?? 0;
@@ -78,16 +134,30 @@ export function openCenteredPopup(url: string, title: string, w = 600, h = 720):
   );
 }
 
+function isAllowedMessageOrigin(origin: string): boolean {
+  if (!origin) return false;
+  if (typeof window !== 'undefined' && origin === window.location.origin) return true;
+  return origin.endsWith('.run.app') || origin.includes('localhost');
+}
+
 /**
  * Starts a secure server-side Authorization Code flow with PKCE in a popup window
  */
-export async function startServerOAuthFlow(provider: string): Promise<{
+export async function startServerOAuthFlow(
+  provider: string,
+  options?: { mode?: 'login' | 'connect' }
+): Promise<{
   accountId: string;
   provider: string;
   email?: string;
   displayName: string;
+  sessionToken?: string;
 }> {
-  const res = await fetch(`/api/oauth/${encodeURIComponent(provider)}/authorize`);
+  const query = options?.mode === 'login' ? '?mode=login' : '';
+  const res = await fetch(`/api/oauth/${encodeURIComponent(provider)}/authorize${query}`, {
+    headers: getAuthorizedHeaders(),
+    credentials: 'include',
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || `Failed to initiate OAuth authorization for ${provider}`);
@@ -97,7 +167,9 @@ export async function startServerOAuthFlow(provider: string): Promise<{
 
   const popup = openCenteredPopup(url, `Connect ${name || provider}`);
   if (!popup) {
-    throw new Error('Popup was blocked by your browser. Please allow popups for MountYourClouds to use 1-click sign-in.');
+    throw new Error(
+      'Popup was blocked by your browser. Please allow popups for MountYourClouds to complete OAuth sign-in.'
+    );
   }
 
   return new Promise((resolve, reject) => {
@@ -109,16 +181,21 @@ export async function startServerOAuthFlow(provider: string): Promise<{
     };
 
     const messageHandler = (event: MessageEvent) => {
+      if (!isAllowedMessageOrigin(event.origin)) return;
       const msg = event.data;
       if (!msg) return;
 
       if (msg.type === 'MOUNTYOURCLOUDS_OAUTH_SUCCESS') {
         cleanup();
+        if (msg.sessionToken) {
+          setClientSessionToken(msg.sessionToken);
+        }
         resolve({
           accountId: msg.accountId,
           provider: msg.provider,
           email: msg.email,
           displayName: msg.displayName,
+          sessionToken: msg.sessionToken,
         });
       } else if (msg.type === 'MOUNTYOURCLOUDS_OAUTH_ERROR') {
         cleanup();
@@ -143,9 +220,6 @@ export async function startServerOAuthFlow(provider: string): Promise<{
   });
 }
 
-/**
- * Starts a 1-click OAuth 2.0 dance in a popup window
- */
 export async function startOAuthDance(params: {
   provider: OAuthSupportedProvider;
   clientId?: string;
@@ -156,17 +230,15 @@ export async function startOAuthDance(params: {
     throw new Error(`Unsupported OAuth provider: ${params.provider}`);
   }
 
-  const clientId = params.clientId?.trim();
+  const clientId = (params.clientId || getDefaultProviderClientId(params.provider)).trim();
   if (!clientId) {
     throw new Error(
-      `Please provide a Client ID for ${config.label} in Mount Settings or Workspace Settings to start 1-click OAuth sign-in.`
+      `Please configure a Client ID for ${config.label} to initiate OAuth authorization.`
     );
   }
 
-  // Current origin callback path
   const redirectUri =
-    params.redirectUri ||
-    `${window.location.origin}${window.location.pathname}#/oauth/callback`;
+    params.redirectUri || `${window.location.origin}${window.location.pathname}#/oauth/callback`;
 
   const state = `myc_${params.provider}_${generateRandomString(16)}`;
   sessionStorage.setItem('myc_oauth_state', state);
@@ -189,7 +261,7 @@ export async function startOAuthDance(params: {
   const popup = openCenteredPopup(authUrl.toString(), `Connect ${config.label}`);
   if (!popup) {
     throw new Error(
-      'Popup was blocked by your browser. Please allow popups for MountYourClouds to use 1-click sign-in.'
+      'Popup was blocked by your browser. Please allow popups for MountYourClouds to complete OAuth sign-in.'
     );
   }
 
@@ -197,7 +269,6 @@ export async function startOAuthDance(params: {
     let checkInterval: ReturnType<typeof setInterval> | null = null;
 
     const messageHandler = (event: MessageEvent) => {
-      // Must come from same window origin
       if (event.origin !== window.location.origin) return;
 
       const data = event.data;
@@ -228,7 +299,6 @@ export async function startOAuthDance(params: {
 
     window.addEventListener('message', messageHandler);
 
-    // Watch for user closing the popup manually before finishing
     checkInterval = setInterval(() => {
       if (popup.closed) {
         if (checkInterval) clearInterval(checkInterval);
@@ -237,7 +307,6 @@ export async function startOAuthDance(params: {
       }
     }, 800);
 
-    // 3 minute timeout
     setTimeout(() => {
       if (checkInterval) clearInterval(checkInterval);
       window.removeEventListener('message', messageHandler);
@@ -247,9 +316,6 @@ export async function startOAuthDance(params: {
   });
 }
 
-/**
- * Parses connection string or pasted multi-line AWS/S3 credentials
- */
 export function parseS3CredentialsText(text: string): {
   accessKeyId: string;
   secretAccessKey: string;
@@ -260,7 +326,6 @@ export function parseS3CredentialsText(text: string): {
   const clean = text.trim();
   if (!clean) return null;
 
-  // JSON format
   if (clean.startsWith('{') && clean.endsWith('}')) {
     try {
       const obj = JSON.parse(clean);
@@ -274,13 +339,10 @@ export function parseS3CredentialsText(text: string): {
         };
       }
     } catch {
-      // Not JSON, continue to other formats
+      // Continue
     }
   }
 
-  // AWS INI credentials file format
-  // aws_access_key_id = AKIA...
-  // aws_secret_access_key = ...
   const accessKeyMatch = clean.match(/(?:aws_)?access_key_id\s*[:=]\s*([^\s]+)/i);
   const secretKeyMatch = clean.match(/(?:aws_)?secret_access_key\s*[:=]\s*([^\s]+)/i);
   const regionMatch = clean.match(/(?:aws_default_)?region\s*[:=]\s*([^\s]+)/i);
@@ -297,7 +359,6 @@ export function parseS3CredentialsText(text: string): {
     };
   }
 
-  // Single line KEY:SECRET format
   if (/^[A-Za-z0-9_-]{10,}:[A-Za-z0-9/+=_-]{16,}$/.test(clean)) {
     const [k, s] = clean.split(':');
     return { accessKeyId: k, secretAccessKey: s };
@@ -306,9 +367,6 @@ export function parseS3CredentialsText(text: string): {
   return null;
 }
 
-/**
- * Smart Base-Path Resolver for Self-Hosted & WebDAV Clouds
- */
 export function getSmartWebDavDefaults(
   kind: ProviderKind,
   username: string
